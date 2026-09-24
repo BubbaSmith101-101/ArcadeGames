@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Asteroids HTML5 Game</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#000; }
+  canvas { display:block; margin:auto; background:#111; }
+  #overlay {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    display:flex; align-items:center; justify-content:center;
+    color:#fff; font-family:Arial,Helvetica,sans-serif;
+    pointer-events:none; text-align:center;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="overlay"></div>
+
+<script>
+/* -------------------------------------------------------------
+   Asteroids – tiny HTML5 clone
+   ------------------------------------------------------------- */
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+
+  // -----------------------------------------------------------------
+  // Utility helpers
+  // -----------------------------------------------------------------
+  const rand = (min, max) => Math.random() * (max - min) + min;
+  const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+  const wrap = (value, max) => (value + max) % max;
+
+  // -----------------------------------------------------------------
+  // Game constants
+  // -----------------------------------------------------------------
+  const FPS = 60;
+  const SHIP_SIZE = 30;           // ship height in pixels
+  const TURN_SPEED = 360;         // degrees per second
+  const THRUST = 0.15;            // acceleration of ship per frame
+  const FRICTION = 0.99;          // friction (0 = no friction, 1 = lots)
+  const LASER_MAX = 10;           // max lasers on screen
+  const LASER_SPEED = 5;
+  const LASER_DIST = 0.6;         // fraction of screen width laser can travel
+  const ASTEROID_NUM = 4;         // starting number of asteroids
+  const ASTEROID_SIZE = 100;      // starting size of asteroids in px
+  const ASTEROID_SPEED = 50;      // max starting speed (px/s)
+  const ASTEROID_VERT = 10;       // average vertices on each asteroid
+  const ASTEROID_JAG = 0.4;        // jaggedness (0 = smooth, 1 = jagged)
+
+  // -----------------------------------------------------------------
+  // Game state
+  // -----------------------------------------------------------------
+  let ship, lasers, asteroids, keys, lives, score, level, gameOver, paused;
+
+  // -----------------------------------------------------------------
+  // Ship definition
+  // -----------------------------------------------------------------
+  const initShip = () => ({
+    x: canvas.width / 2,
+    y: canvas.height / 2,
+    r: SHIP_SIZE / 2,
+    a: 90 / 180 * Math.PI,   // facing up
+    rot: 0,
+    thrusting: false,
+    thrust: {x:0, y:0},
+    canShoot: true,
+    explodeTime: 0
+  });
+
+  // -----------------------------------------------------------------
+  // Laser definition
+  // -----------------------------------------------------------------
+  /* -------------------------------------------------------------
+   createLaser – now spawns at the *tip* of the ship
+   ------------------------------------------------------------- */
+const createLaser = (shipX, shipY, shipAngle) => {
+  // tip is a little farther out than ship.r (the ship’s radius)
+  const tipOffset = ship.r * 1.2;                 // <-- tweakable
+  const tipX = shipX + Math.cos(shipAngle) * tipOffset;
+  const tipY = shipY + Math.sin(shipAngle) * tipOffset;
+
+  return {
+    x: tipX,
+    y: tipY,
+    xv: Math.cos(shipAngle) * LASER_SPEED,
+    yv: Math.sin(shipAngle) * LASER_SPEED,
+    dist: 0,
+    a: shipAngle                                 // keep heading for drawing
+  };
+};
+
+  // -----------------------------------------------------------------
+  // Asteroid definition (randomized polygon)
+  // -----------------------------------------------------------------
+  const createAsteroid = (x, y, r) => {
+    const lvl = level;
+    const aVel = rand(-0.5, 0.5) * Math.PI/180; // rotation speed
+    const verts = Math.floor(rand(ASTEROID_VERT/2, ASTEROID_VERT));
+    const offset = [];
+
+    for (let i = 0; i < verts; i++) {
+      offset.push(rand(1 - ASTEROID_JAG, 1 + ASTEROID_JAG));
+    }
+
+    return {
+      x, y,
+      xv: rand(-ASTEROID_SPEED, ASTEROID_SPEED) / FPS,
+      yv: rand(-ASTEROID_SPEED, ASTEROID_SPEED) / FPS,
+      r,
+      a: rand(0, Math.PI * 2),
+      aVel,
+      verts,
+      offset
+    };
+  };
+
+  // -----------------------------------------------------------------
+  // Initialize / reset a level
+  // -----------------------------------------------------------------
+  const newLevel = () => {
+    level++;
+    // create asteroids – ensure they don't spawn too close to the ship
+    asteroids = [];
+    const asteroidCount = ASTEROID_NUM + level;
+    for (let i = 0; i < asteroidCount; i++) {
+      let x, y;
+      do {
+        x = rand(0, canvas.width);
+        y = rand(0, canvas.height);
+      } while (dist(x, y, ship.x, ship.y) < ASTEROID_SIZE * 2 + ship.r);
+      const r = ASTEROID_SIZE / (1 + Math.floor(level / 3));
+      asteroids.push(createAsteroid(x, y, r));
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Setup canvas size
+  // -----------------------------------------------------------------
+  const resize = () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  };
+  window.addEventListener('resize', resize);
+  resize();
+
+  // -----------------------------------------------------------------
+  // Input handling
+  // -----------------------------------------------------------------
+  keys = {};
+  document.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    // Prevent scrolling with arrow keys / space
+    if (['ArrowLeft','ArrowRight','ArrowUp','Space','KeyP','KeyR'].includes(e.code)) {
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('keyup', e => {
+    keys[e.code] = false;
+  });
+
+  // -----------------------------------------------------------------
+  // Game loop (using requestAnimationFrame)
+  // -----------------------------------------------------------------
+  const update = (delta) => {
+    if (gameOver || paused) return;
+
+    // --------- Ship rotation & thrust ----------
+    ship.rot = 0;
+    if (keys['ArrowLeft'])  ship.rot = TURN_SPEED / 180 * Math.PI / FPS;
+    if (keys['ArrowRight']) ship.rot = -TURN_SPEED / 180 * Math.PI / FPS;
+    ship.a += ship.rot;
+
+    ship.thrusting = keys['ArrowUp'];
+    if (ship.thrusting) {
+      ship.thrust.x += Math.cos(ship.a) * THRUST;
+      ship.thrust.y += Math.sin(ship.a) * THRUST;
+    } else {
+      // Apply friction when not thrusting
+      ship.thrust.x *= FRICTION;
+      ship.thrust.y *= FRICTION;
+    }
+
+    ship.x = wrap(ship.x + ship.thrust.x, canvas.width);
+    ship.y = wrap(ship.y + ship.thrust.y, canvas.height);
+
+    // --------- Shooting ----------
+    if (keys['Space'] && ship.canShoot && lasers.length < LASER_MAX) {
+  lasers.push(createLaser(ship.x, ship.y, ship.a));
+  ship.canShoot = false;
+}
+    if (!keys['Space']) ship.canShoot = true;
+
+    // Move lasers
+    for (let i = lasers.length - 1; i >= 0; i--) {
+      const l = lasers[i];
+      l.x += l.xv;
+      l.y += l.yv;
+      l.dist += Math.hypot(l.xv, l.yv);
+
+      // Remove if out of range or off-screen
+      if (l.dist > canvas.width * LASER_DIST ||
+          l.x < 0 || l.x > canvas.width ||
+          l.y < 0 || l.y > canvas.height) {
+        lasers.splice(i, 1);
+      }
+    }
+
+    // --------- Move asteroids ----------
+    asteroids.forEach(a => {
+      a.x = wrap(a.x + a.xv, canvas.width);
+      a.y = wrap(a.y + a.yv, canvas.height);
+      a.a += a.aVel;
+    });
+
+    // --------- Collision detection ----------
+    // Ship ↔ Asteroid
+    if (!ship.explodeTime) {
+      for (let i = 0; i < asteroids.length; i++) {
+        const a = asteroids[i];
+        if (dist(ship.x, ship.y, a.x, a.y) < ship.r + a.r) {
+          // Ship destroyed
+          ship.explodeTime = Math.ceil(FPS * 0.3);
+          lives--;
+          if (lives <= 0) {
+            gameOver = true;
+            overlay.innerHTML = `<h1>Game Over</h1><p>Score: ${score}</p><p>Press R to restart</p>`;
+          }
+          break;
+        }
+      }
+    } else {
+      // explode animation countdown
+      ship.explodeTime--;
+      if (ship.explodeTime <= 0) {
+        // respawn if lives left
+        if (lives > 0) ship = initShip();
+      }
+    }
+
+    // Laser ↔ Asteroid
+    for (let i = asteroids.length - 1; i >= 0; i--) {
+      const a = asteroids[i];
+      let hit = false;
+
+      for (let j = lasers.length - 1; j >= 0; j--) {
+        const l = lasers[j];
+        if (dist(l.x, l.y, a.x, a.y) < a.r) {
+          // Destroy asteroid & laser
+          hit = true;
+          lasers.splice(j, 1);
+          break;
+        }
+      }
+
+      if (hit) {
+        // Increase score
+        score += Math.ceil(100 / a.r);
+        // Split asteroid if large enough
+        if (a.r > ASTEROID_SIZE / 4) {
+          const newR = a.r / 2;
+          for (let k = 0; k < 2; k++) {
+            asteroids.push(createAsteroid(a.x, a.y, newR));
+          }
+        }
+        asteroids.splice(i, 1);
+      }
+    }
+
+    // Wave cleared → next level
+    if (asteroids.length === 0 && !gameOver) {
+      newLevel();
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Rendering
+  // -----------------------------------------------------------------
+  const drawShip = (x, y, a, color = '#fff') => {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(a);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -SHIP_SIZE / 2);
+    ctx.lineTo(SHIP_SIZE / 2, SHIP_SIZE / 2);
+    ctx.lineTo(0, SHIP_SIZE / 3);
+    ctx.lineTo(-SHIP_SIZE / 2, SHIP_SIZE / 2);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawLaser = (l) => {
+  const len = 8;                     // length of the laser line
+  ctx.strokeStyle = '#ff0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(l.x, l.y);
+  ctx.lineTo(
+    l.x - Math.cos(l.a) * len,
+    l.y - Math.sin(l.a) * len
+  );
+  ctx.stroke();
+};
+
+  const drawAsteroid = (a) => {
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(a.a);
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < a.verts; i++) {
+      const angle = ((Math.PI * 2) / a.verts) * i;
+      const r = a.r * a.offset[i];
+      const x = Math.cos(angle) * r;
+      const y = Math.sin(angle) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawInfo = () => {
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${score}`, 20, 30);
+    ctx.fillText(`Lives: ${lives}`, 20, 50);
+    ctx.fillText(`Level: ${level}`, 20, 70);
+  };
+
+  const render = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Asteroids
+    asteroids.forEach(drawAsteroid);
+
+    // Ship (or explosion)
+    if (ship.explodeTime) {
+      // Simple explosion: draw expanding circles
+      const maxRadius = ship.r * 4;
+      const radius = maxRadius * (1 - ship.explodeTime / (FPS * 0.3));
+      ctx.fillStyle = `rgba(255,100,0,${1 - ship.explodeTime / (FPS * 0.3)})`;
+      ctx.beginPath();
+      ctx.arc(ship.x, ship.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      drawShip(ship.x, ship.y, ship.a);
+    }
+
+    // Lasers
+    lasers.forEach(drawLaser);
+
+    // HUD
+    drawInfo();
+
+    // Pause overlay
+    if (paused) {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.font = '48px Arial';
+      ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2);
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Main loop driver
+  // -----------------------------------------------------------------
+  let last = performance.now();
+  const loop = (now) => {
+    const delta = (now - last) / 1000; // seconds
+    last = now;
+    update(delta);
+    render();
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+
+  // -----------------------------------------------------------------
+  // Game start / restart logic
+  // -----------------------------------------------------------------
+  const startGame = () => {
+    ship = initShip();
+    lasers = [];
+    keys = {};
+    lives = 3;
+    score = 0;
+    level = 0;
+    gameOver = false;
+    paused = false;
+    overlay.innerHTML = '';
+    newLevel();
+  };
+  startGame();
+
+  // Pause / restart controls
+  document.addEventListener('keydown', e => {
+    if (e.code === 'KeyP') {
+      paused = !paused;
+      if (paused) overlay.innerHTML = `<h2>PAUSED</h2>`;
+      else overlay.innerHTML = '';
+    }
+    if (e.code === 'KeyR' && gameOver) {
+      startGame();
+    }
+  });
+})();
+</script>
+</body>
+</html>

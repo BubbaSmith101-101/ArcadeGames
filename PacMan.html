@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pac-Man: Fixed & Working</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            background-color: #111;
+            color: white;
+            font-family: 'Press Start 2P', cursive;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        h1 {
+            color: #ffff00;
+            text-shadow: 4px 4px #ff0000;
+            font-size: 40px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        #game-container {
+            position: relative;
+            border: 4px solid #1919A6; 
+            box-shadow: 0 0 20px #1919A6;
+        }
+
+        canvas {
+            display: block;
+            background-color: black;
+        }
+
+        #ui-layer {
+            width: 448px; 
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            font-size: 18px;
+            color: #fff;
+        }
+
+        .stat-box {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon {
+            width: 20px;
+            height: 20px;
+            background-color: yellow;
+            border-radius: 50%;
+        }
+        
+        .ghost-icon {
+            width: 20px;
+            height: 20px;
+            background-color: cyan;
+            clip-path: polygon(0 0, 100% 0, 100% 100%, 75% 75%, 50% 100%, 25% 75%, 0 100%);
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        button {
+            margin-top: 30px;
+            padding: 15px 30px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 16px;
+            background: #ffff00;
+            border: 4px solid #fff;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: transform 0.1s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+            background: #fff;
+            border-color: #ffff00;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+        
+        .controls {
+            margin-top: 20px;
+            font-size: 12px;
+            color: #aaa;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Pac-Man</h1>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="448" height="496"></canvas>
+        
+        <div id="ui-layer">
+            <div class="stat-box">
+                <div class="icon"></div>
+                <span id="score">0</span>
+            </div>
+            <div class="stat-box">
+                <div class="ghost-icon"></div>
+                <span id="lives">3</span>
+            </div>
+        </div>
+
+        <div id="overlay">
+            <h2 id="overlay-title" style="font-size: 30px; margin-bottom: 20px;">READY?</h2>
+            <p id="overlay-message" style="margin-bottom: 30px;">Use Arrow Keys to Move</p>
+            <button id="start-btn" onclick="startGame()">START GAME</button>
+        </div>
+    </div>
+
+    <div class="controls">
+        ARROWS to Move &bull; SPACE to Pause
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const livesEl = document.getElementById('lives');
+        const overlay = document.getElementById('overlay');
+        const overlayTitle = document.getElementById('overlay-title');
+        const overlayMsg = document.getElementById('overlay-message');
+
+        const TILE_SIZE = 16;
+        const PACMAN_SPEED = 2; 
+        const GHOST_SPEED = 2;
+        
+        const mapLayout = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
+            [1,3,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,3,1],
+            [1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+            [1,0,1,1,0,1,0,1,1,1,1,1,0,1,0,1,1,0,1],
+            [1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1],
+            [1,1,1,1,0,1,1,1,2,1,2,1,1,1,0,1,1,1,1],
+            [2,2,2,1,0,1,2,2,2,2,2,2,2,1,0,1,2,2,2],
+            [1,1,1,1,0,1,2,1,1,4,4,4,2,1,0,1,1,1,1],
+            [2,2,2,2,0,2,2,1,4,4,4,4,2,2,0,2,2,2,2], 
+            [1,1,1,1,0,1,2,1,1,1,1,1,2,1,0,1,1,1,1],
+            [2,2,2,1,0,1,2,2,2,2,2,2,2,1,0,1,2,2,2],
+            [1,1,1,1,0,1,0,1,1,1,1,1,0,1,0,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
+            [1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1,0,1],
+            [1,3,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,3,1],
+            [1,1,0,1,0,1,0,1,1,1,1,1,0,1,0,1,0,1,1],
+            [1,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+
+        let map = [];
+        let pellets = [];
+        let powerPellets = [];
+        let walls = [];
+        let score = 0;
+        let lives = 3;
+        let gameActive = false;
+        let animationId;
+        let pelletsRemaining = 0;
+        let powerModeTime = 0;
+
+        const UP = { x: 0, y: -1 };
+        const DOWN = { x: 0, y: 1 };
+        const LEFT = { x: -1, y: 0 };
+        const RIGHT = { x: 1, y: 0 };
+        const STOP = { x: 0, y: 0 };
+
+        class Entity {
+            constructor(x, y, color, speed) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.speed = speed;
+                this.dir = STOP;
+                this.nextDir = STOP;
+                this.radius = TILE_SIZE / 2 - 2;
+            }
+
+            getGridPos() {
+                // Clamp X to map bounds for safe array access
+                let tempX = this.x;
+                if (tempX < 0) tempX = 0;
+                if (tempX > canvas.width) tempX = canvas.width;
+                
+                return {
+                    c: Math.floor((tempX + TILE_SIZE / 2) / TILE_SIZE),
+                    r: Math.floor((this.y + TILE_SIZE / 2) / TILE_SIZE)
+                };
+            }
+
+            canMove(direction) {
+                const gp = this.getGridPos();
+                const nextR = gp.r + direction.y;
+                const nextC = gp.c + direction.x;
+
+                // Tunnel Logic: Check if it's the tunnel row (10)
+                if (nextC < 0 || nextC >= map[0].length) {
+                    if (gp.r === 10) return true;
+                    return false;
+                }
+
+                if (nextR < 0 || nextR >= map.length) return false;
+
+                if (map[nextR][nextC] === 1) return false;
+                return true;
+            }
+
+            isCentered() {
+                return (this.x % TILE_SIZE === 0 && this.y % TILE_SIZE === 0);
+            }
+        }
+
+        class Pacman extends Entity {
+            constructor(x, y) {
+                super(x, y, '#FFFF00', PACMAN_SPEED);
+                this.mouthOpen = 0;
+                this.mouthSpeed = 0.2;
+                this.rotation = 0;
+            }
+
+            update() {
+                // Tunnel Wrapping BEFORE logic
+                if (this.x > canvas.width) this.x = -TILE_SIZE;
+                if (this.x < -TILE_SIZE) this.x = canvas.width;
+
+                if (this.isCentered()) {
+                    if (this.nextDir !== STOP && this.canMove(this.nextDir)) {
+                        this.dir = this.nextDir;
+                        this.nextDir = STOP;
+                    }
+                    if (!this.canMove(this.dir)) this.dir = STOP;
+                }
+
+                this.x += this.dir.x * this.speed;
+                this.y += this.dir.y * this.speed;
+                
+                // Animation
+                if (this.dir !== STOP) {
+                    this.mouthOpen += this.mouthSpeed;
+                    if (this.mouthOpen > 0.25 || this.mouthOpen < 0) this.mouthSpeed = -this.mouthSpeed;
+                    if (this.dir === RIGHT) this.rotation = 0;
+                    if (this.dir === DOWN) this.rotation = Math.PI / 2;
+                    if (this.dir === LEFT) this.rotation = Math.PI;
+                    if (this.dir === UP) this.rotation = -Math.PI / 2;
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x + TILE_SIZE/2, this.y + TILE_SIZE/2);
+                ctx.rotate(this.rotation);
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                const mouthAngle = this.mouthOpen * Math.PI;
+                ctx.arc(0, 0, this.radius, mouthAngle, 2 * Math.PI - mouthAngle);
+                ctx.lineTo(0, 0);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        class Ghost extends Entity {
+            constructor(x, y, color) {
+                super(x, y, color, GHOST_SPEED);
+                this.startX = x;
+                this.startY = y;
+                this.dir = [UP, DOWN, LEFT, RIGHT][Math.floor(Math.random() * 4)];
+                this.isScared = false;
+            }
+
+            update() {
+                // *** CRITICAL FIX FOR TUNNELS ***
+                // Wrap X position BEFORE doing any logic
+                if (this.x > canvas.width) {
+                    this.x = -TILE_SIZE; 
+                } else if (this.x < -TILE_SIZE) {
+                    this.x = canvas.width;
+                }
+
+                if (this.isCentered()) {
+                    const possibleMoves = [];
+                    const gp = this.getGridPos();
+
+                    [UP, DOWN, LEFT, RIGHT].forEach(d => {
+                        // Prevent 180 turns
+                        if (d.x === -this.dir.x && d.y === -this.dir.y) return;
+
+                        const nextR = gp.r + d.y;
+                        const nextC = gp.c + d.x;
+
+                        // Check Tunnel for C
+                        if (nextC < 0 || nextC >= map[0].length) {
+                            if (gp.r === 10) possibleMoves.push(d);
+                            return; 
+                        }
+
+                        if (nextR >= 0 && nextR < map.length && map[nextR][nextC] !== 1) {
+                            possibleMoves.push(d);
+                        }
+                    });
+
+                    if (possibleMoves.length > 0) {
+                        this.dir = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
+                    }
+                }
+
+                this.x += this.dir.x * this.speed;
+                this.y += this.dir.y * this.speed;
+            }
+
+            draw() {
+                const cx = this.x + TILE_SIZE/2;
+                const cy = this.y + TILE_SIZE/2;
+                ctx.fillStyle = this.isScared ? '#0000FF' : this.color;
+                
+                ctx.beginPath();
+                ctx.arc(cx, cy - 2, this.radius, Math.PI, 0);
+                ctx.lineTo(cx + this.radius, cy + this.radius);
+                for(let i=1; i<=3; i++) {
+                    ctx.lineTo(cx + this.radius - (2 * this.radius / 3) * i, cy + this.radius - (i%2==0?0:3));
+                }
+                ctx.lineTo(cx - this.radius, cy + this.radius);
+                ctx.fill();
+
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(cx - 4, cy - 4, 3, 0, Math.PI*2);
+                ctx.arc(cx + 4, cy - 4, 3, 0, Math.PI*2);
+                ctx.fill();
+                ctx.fillStyle = 'black';
+                const eyeOffsetX = this.dir.x * 1.5;
+                const eyeOffsetY = this.dir.y * 1.5;
+                ctx.beginPath();
+                ctx.arc(cx - 4 + eyeOffsetX, cy - 4 + eyeOffsetY, 1.5, 0, Math.PI*2);
+                ctx.arc(cx + 4 + eyeOffsetX, cy - 4 + eyeOffsetY, 1.5, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+
+        let pacman;
+        let ghosts = [];
+
+        function initGame() {
+            map = mapLayout.map(row => [...row]);
+            pellets = [];
+            powerPellets = [];
+            walls = [];
+            pelletsRemaining = 0;
+
+            const pacmanStartX = 9 * TILE_SIZE;
+            const pacmanStartY = 15 * TILE_SIZE;
+            pacman = new Pacman(pacmanStartX, pacmanStartY);
+
+            ghosts = [
+                new Ghost(9 * TILE_SIZE, 8 * TILE_SIZE, '#FF0000'), 
+                new Ghost(8 * TILE_SIZE, 9 * TILE_SIZE, '#FFB8FF'), 
+                new Ghost(9 * TILE_SIZE, 9 * TILE_SIZE, '#00FFFF'), 
+                new Ghost(10 * TILE_SIZE, 9 * TILE_SIZE, '#FFB852') 
+            ];
+
+            for (let r = 0; r < map.length; r++) {
+                for (let c = 0; c < map[0].length; c++) {
+                    const x = c * TILE_SIZE;
+                    const y = r * TILE_SIZE;
+                    
+                    if (map[r][c] === 1) {
+                        walls.push({x, y});
+                    } else if (map[r][c] === 0) {
+                        pellets.push({x: x + TILE_SIZE/2, y: y + TILE_SIZE/2, active: true});
+                        pelletsRemaining++;
+                    } else if (map[r][c] === 3) {
+                        powerPellets.push({x: x + TILE_SIZE/2, y: y + TILE_SIZE/2, active: true});
+                        pelletsRemaining++;
+                    }
+                }
+            }
+        }
+
+        function drawMap() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#1919A6';
+            ctx.lineWidth = 2;
+            walls.forEach(w => ctx.strokeRect(w.x + 4, w.y + 4, TILE_SIZE - 8, TILE_SIZE - 8));
+
+            ctx.fillStyle = '#ffb8ae';
+            pellets.forEach(p => {
+                if (p.active) ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+            });
+
+            if (Math.floor(Date.now() / 200) % 2 === 0) {
+                powerPellets.forEach(p => {
+                    if (p.active) {
+                        ctx.beginPath();
+                        ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                });
+            }
+        }
+
+        function checkCollisions() {
+            pellets.forEach(p => {
+                if (p.active) {
+                    const dist = Math.hypot(pacman.x + TILE_SIZE/2 - p.x, pacman.y + TILE_SIZE/2 - p.y);
+                    if (dist < 10) { p.active = false; score += 10; pelletsRemaining--; scoreEl.innerText = score; }
+                }
+            });
+
+            powerPellets.forEach(p => {
+                if (p.active) {
+                    const dist = Math.hypot(pacman.x + TILE_SIZE/2 - p.x, pacman.y + TILE_SIZE/2 - p.y);
+                    if (dist < 10) { 
+                        p.active = false; score += 50; pelletsRemaining--; scoreEl.innerText = score; 
+                        activatePowerMode();
+                    }
+                }
+            });
+
+            ghosts.forEach(ghost => {
+                const dist = Math.hypot(pacman.x - ghost.x, pacman.y - ghost.y);
+                if (dist < TILE_SIZE) {
+                    if (ghost.isScared && powerModeTime > 0) {
+                        score += 200; scoreEl.innerText = score;
+                        ghost.x = ghost.startX; ghost.y = ghost.startY; ghost.isScared = false;
+                    } else {
+                        handleDeath();
+                    }
+                }
+            });
+
+            if (pelletsRemaining === 0) gameOver(true);
+        }
+
+        function activatePowerMode() {
+            powerModeTime = 600; 
+            ghosts.forEach(g => g.isScared = true);
+        }
+
+        function handleDeath() {
+            lives--;
+            livesEl.innerText = lives;
+            if (lives <= 0) gameOver(false);
+            else {
+                pacman.x = 9 * TILE_SIZE; pacman.y = 15 * TILE_SIZE; pacman.dir = STOP; pacman.nextDir = STOP;
+                ghosts.forEach(g => { g.x = g.startX; g.y = g.startY; g.dir = [UP, DOWN, LEFT, RIGHT][Math.floor(Math.random() * 4)]; });
+            }
+        }
+
+        function gameOver(win) {
+            gameActive = false;
+            cancelAnimationFrame(animationId);
+            overlayTitle.innerText = win ? "YOU WIN!" : "GAME OVER";
+            overlayTitle.style.color = win ? "#00FF00" : "#FF0000";
+            overlayMsg.innerText = `Final Score: ${score}`;
+            document.getElementById('start-btn').innerText = "PLAY AGAIN";
+            overlay.classList.remove('hidden');
+        }
+
+        function startGame() {
+            initGame();
+            score = 0; lives = 3;
+            scoreEl.innerText = "0"; livesEl.innerText = "3";
+            overlay.classList.add('hidden');
+            gameActive = true;
+            gameLoop();
+        }
+
+        function gameLoop() {
+            if (!gameActive) return;
+            pacman.update();
+            ghosts.forEach(g => g.update());
+            checkCollisions();
+
+            if (powerModeTime > 0) { powerModeTime--; if (powerModeTime === 0) ghosts.forEach(g => g.isScared = false); }
+            
+            drawMap();
+            pacman.draw();
+            ghosts.forEach(g => g.draw());
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (!gameActive && e.code === 'Space') startGame();
+            if (!gameActive) return;
+            if (e.key === 'ArrowUp') pacman.nextDir = UP;
+            if (e.key === 'ArrowDown') pacman.nextDir = DOWN;
+            if (e.key === 'ArrowLeft') pacman.nextDir = LEFT;
+            if (e.key === 'ArrowRight') pacman.nextDir = RIGHT;
+            if (e.code === 'Space') {
+                gameActive = false;
+                overlayTitle.innerText = "PAUSED";
+                overlayTitle.style.color = "#FFFF00";
+                overlayMsg.innerText = "Press Space to Resume";
+                document.getElementById('start-btn').classList.add('hidden');
+                overlay.classList.remove('hidden');
+                const pauseLoop = () => { if (gameActive) return; requestAnimationFrame(pauseLoop); }; pauseLoop();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space' && !gameActive && overlayTitle.innerText === "PAUSED") {
+                overlay.classList.add('hidden');
+                document.getElementById('start-btn').classList.remove('hidden');
+                gameActive = true;
+                gameLoop();
+            }
+        });
+
+        initGame();
+        drawMap();
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Star Wars Arcade – X‑Wing vs. TIE Fighters</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:sans-serif;}
+  canvas{display:block;margin:auto;background:#000;}
+  #overlay{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;text-align:center;pointer-events:none;
+    font-size:24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay"></div>
+
+<script>
+(() => {
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  const overlay = document.getElementById('overlay');
+
+  /* --------------------------------------------------------------
+     Resize canvas to fill window
+     -------------------------------------------------------------- */
+  const resize = () => { c.width = window.innerWidth; c.height = window.innerHeight; };
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* --------------------------------------------------------------
+     Helper functions
+     -------------------------------------------------------------- */
+  const rand = (a,b) => Math.random() * (b-a) + a;
+  const wrap = (v, max) => (v + max) % max;
+  const dist = (x1,y1,x2,y2) => Math.hypot(x2-x1, y2-y1);
+
+  /* --------------------------------------------------------------
+     Game objects
+     -------------------------------------------------------------- */
+  let ship, lasers, enemies, enemyShots, stars, powerUps;
+  let keys = {}, score = 0, lives = 3, level = 1, gameOver = false, paused = false;
+
+  /* -----------------------------------------------------------------
+     Ship (X‑Wing) – the ship’s *centroid* is used as its position.
+     ----------------------------------------------------------------- */
+  const initShip = () => ({
+    x: c.width/2,
+    y: c.height*0.85,
+    r: 15,                       // distance from centroid to the *base* of the triangle
+    a: -Math.PI/2,               // facing up (0 rad points right)
+    vx:0, vy:0,
+    thrust:false,
+    cooldown:0,
+    explode:0
+  });
+
+  /* -----------------------------------------------------------------
+     Laser (player)
+     ----------------------------------------------------------------- */
+  const makeLaser = (x,y,ang) => ({
+    x, y,
+    xv: Math.cos(ang) * 8,
+    yv: Math.sin(ang) * 8,
+    life: 0
+  });
+
+  /* -----------------------------------------------------------------
+     Enemy ship (TIE‑like)
+     ----------------------------------------------------------------- */
+  const makeEnemy = (x,y,spd) => ({
+    x, y,
+    r: 12,
+    xv: rand(-0.5,0.5) * spd,
+    yv: spd,
+    a: Math.PI/2,
+    cooldown: Math.floor(rand(60,180))
+  });
+
+  /* -----------------------------------------------------------------
+     Enemy laser
+     ----------------------------------------------------------------- */
+  const makeEnemyShot = (x,y) => ({
+    x, y,
+    xv: 0,
+    yv: 5,
+    life:0
+  });
+
+  /* -----------------------------------------------------------------
+     Starfield (background)
+     ----------------------------------------------------------------- */
+  const initStars = (count) => {
+    const arr = [];
+    for(let i=0;i<count;i++){
+      arr.push({x:rand(0,c.width), y:rand(0,c.height), sz:rand(1,3), speed:rand(0.2,0.8)});
+    }
+    return arr;
+  };
+
+  /* -----------------------------------------------------------------
+     Power‑up (extra life)
+     ----------------------------------------------------------------- */
+  const makePowerUp = (x,y) => ({
+    x, y,
+    r: 10,
+    vy: 1.5
+  });
+
+  /* --------------------------------------------------------------
+     spawnWave – hoisted so startGame can call it immediately
+     -------------------------------------------------------------- */
+  function spawnWave() {
+    const enemyCount = 5 + level*2;
+    for(let i=0;i<enemyCount;i++){
+      const x = rand(30, c.width-30);
+      const y = rand(-c.height, -30);
+      enemies.push(makeEnemy(x, y, 1 + level*0.2));
+    }
+  }
+
+  /* --------------------------------------------------------------
+     startGame – initialise everything
+     -------------------------------------------------------------- */
+  function startGame() {
+    ship = initShip();
+    lasers = [];
+    enemies = [];
+    enemyShots = [];
+    stars = initStars(150);
+    powerUps = [];
+    keys = {};
+    score = 0;
+    lives = 3;
+    level = 1;
+    gameOver = false;
+    paused = false;
+    overlay.innerHTML = '';
+    spawnWave();               // safe – function is hoisted
+  }
+  startGame();
+
+  /* --------------------------------------------------------------
+     Input handling
+     -------------------------------------------------------------- */
+  document.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if(e.code==='KeyP'){
+      paused = !paused;
+      overlay.innerHTML = paused ? '<h1>PAUSED</h1>' : '';
+    }
+    if(e.code==='KeyR' && gameOver){
+      startGame();
+    }
+  });
+  document.addEventListener('keyup', e => keys[e.code]=false);
+
+  /* --------------------------------------------------------------
+     Main update loop
+     -------------------------------------------------------------- */
+  const update = (dt) => {
+    if(gameOver || paused) return;
+
+    /* ---- Ship movement ------------------------------------------------ */
+    const turnSpeed = 3 * Math.PI/180;          // radians per frame
+    if(keys['ArrowLeft'])  ship.a -= turnSpeed;
+    if(keys['ArrowRight']) ship.a += turnSpeed;
+    ship.thrust = !!keys['ArrowUp'];
+
+    if(ship.thrust){
+      ship.vx += Math.cos(ship.a) * 0.15;
+      ship.vy += Math.sin(ship.a) * 0.15;
+    }else{
+      ship.vx *= 0.98;
+      ship.vy *= 0.98;
+    }
+    ship.x = wrap(ship.x + ship.vx, c.width);
+    ship.y = wrap(ship.y + ship.vy, c.height);
+
+    /* ---- Shooting ----------------------------------------------------- */
+    ship.cooldown--;
+    if(keys['Space'] && ship.cooldown<=0 && ship.explode===0){
+      /*  The triangle’s centroid (ship.x,ship.y) is 1/3 r *below* the tip.
+          Distance from centroid to tip = r + r/3 = 4/3 r.
+          Using that exact factor makes the laser start at the tip.          */
+      const tipOffset = ship.r * 4/3;          // <-- geometric fix
+      const tipX = ship.x + Math.cos(ship.a) * tipOffset;
+      const tipY = ship.y + Math.sin(ship.a) * tipOffset;
+      lasers.push(makeLaser(tipX, tipY, ship.a));
+      ship.cooldown = 12;                     // ~5 shots/sec
+    }
+
+    /* ---- Update player lasers ------------------------------------------ */
+    for(let i=lasers.length-1;i>=0;i--){
+      const l = lasers[i];
+      l.x += l.xv; l.y += l.yv;
+      l.life++;
+      if(l.x<0||l.x>c.width||l.y<0||l.y>c.height||l.life>80) lasers.splice(i,1);
+    }
+
+    /* ---- Enemies ------------------------------------------------------ */
+    enemies.forEach(e => {
+      e.x += e.xv; e.y += e.yv;
+      e.cooldown--;
+      if(e.cooldown<=0){
+        enemyShots.push(makeEnemyShot(e.x, e.y+e.r));
+        e.cooldown = Math.floor(rand(80,150));
+      }
+    });
+    enemies = enemies.filter(e => e.y < c.height + 40);
+
+    /* ---- Enemy shots -------------------------------------------------- */
+    for(let i=enemyShots.length-1;i>=0;i--){
+      const s = enemyShots[i];
+      s.y += s.yv;
+      s.life++;
+      if(s.y>c.height+10 || s.life>120) enemyShots.splice(i,1);
+    }
+
+    /* ---- Power‑ups ---------------------------------------------------- */
+    powerUps.forEach(p => p.y += p.vy);
+    powerUps = powerUps.filter(p => p.y < c.height + 20);
+
+    /* ---- Collisions --------------------------------------------------- */
+    // Laser ↔ enemy
+    for(let i=lasers.length-1;i>=0;i--){
+      const l = lasers[i];
+      for(let j=enemies.length-1;j>=0;j--){
+        const e = enemies[j];
+        if(dist(l.x,l.y,e.x,e.y) < e.r){
+          score += 100;
+          lasers.splice(i,1);
+          enemies.splice(j,1);
+          if(Math.random()<0.1) powerUps.push(makePowerUp(e.x, e.y));
+          break;
+        }
+      }
+    }
+
+    // Enemy shot ↔ player
+    if(ship.explode===0){
+      for(let i=enemyShots.length-1;i>=0;i--){
+        const s = enemyShots[i];
+        if(dist(s.x,s.y,ship.x,ship.y) < ship.r){
+          enemyShots.splice(i,1);
+          ship.explode = 30;
+          lives--;
+          if(lives<=0){
+            gameOver = true;
+            overlay.innerHTML = `<h1>GAME OVER</h1><p>Score: ${score}</p><p>Press R to restart</p>`;
+          }
+          break;
+        }
+      }
+    }
+
+    // Enemy ship ↔ player
+    if(ship.explode===0){
+      for(let i=enemies.length-1;i>=0;i--){
+        const e = enemies[i];
+        if(dist(e.x,e.y,ship.x,ship.y) < e.r + ship.r){
+          enemies.splice(i,1);
+          ship.explode = 30;
+          lives--;
+          if(lives<=0){
+            gameOver = true;
+            overlay.innerHTML = `<h1>GAME OVER</h1><p>Score: ${score}</p><p>Press R to restart</p>`;
+          }
+          break;
+        }
+      }
+    }
+
+    // Power‑up ↔ player
+    for(let i=powerUps.length-1;i>=0;i--){
+      const p = powerUps[i];
+      if(dist(p.x,p.y,ship.x,ship.y) < p.r + ship.r){
+        powerUps.splice(i,1);
+        lives = Math.min(lives+1,5);
+        break;
+      }
+    }
+
+    /* ---- Starfield animation ------------------------------------------ */
+    stars.forEach(s => {
+      s.y += s.speed;
+      if(s.y>c.height){ s.x = rand(0,c.width); s.y = 0; }
+    });
+
+    /* ---- Level progression -------------------------------------------- */
+    if(enemies.length===0 && !gameOver){
+      level++;
+      spawnWave();
+    }
+  };
+
+  /* --------------------------------------------------------------
+     Rendering
+     -------------------------------------------------------------- */
+  const draw = () => {
+    ctx.clearRect(0,0,c.width,c.height);
+
+    // Background stars
+    ctx.fillStyle = '#fff';
+    stars.forEach(s => ctx.fillRect(s.x, s.y, s.sz, s.sz));
+
+    // Player ship (or explosion)
+    if(ship.explode>0){
+      const rad = ship.r * (1 + (30-ship.explode)/30);
+      ctx.fillStyle = `rgba(255,100,0,${ship.explode/30})`;
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, rad, 0, Math.PI*2);
+      ctx.fill();
+      ship.explode--;
+    }else{
+      ctx.save();
+      ctx.translate(ship.x, ship.y);
+      ctx.rotate(ship.a);
+      ctx.fillStyle = '#0af';
+      ctx.beginPath();
+      ctx.moveTo(0, -ship.r);               // tip (now at exact tip!)
+      ctx.lineTo(ship.r*0.6, ship.r);
+      ctx.lineTo(-ship.r*0.6, ship.r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Player lasers
+    ctx.strokeStyle = '#ff0';
+    ctx.lineWidth = 2;
+    lasers.forEach(l => {
+      ctx.beginPath();
+      ctx.moveTo(l.x, l.y);
+      ctx.lineTo(l.x - l.xv*3, l.y - l.yv*3);
+      ctx.stroke();
+    });
+
+    // Enemies
+    ctx.fillStyle = '#f44';
+    enemies.forEach(e => {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(e.a);
+      ctx.beginPath();
+      ctx.moveTo(0, -e.r);
+      ctx.lineTo(e.r*0.7, e.r);
+      ctx.lineTo(-e.r*0.7, e.r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    });
+
+    // Enemy shots
+    ctx.strokeStyle = '#f80';
+    enemyShots.forEach(s => {
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x, s.y - 6);
+      ctx.stroke();
+    });
+
+    // Power‑ups
+    ctx.fillStyle = '#ff0';
+    powerUps.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    // HUD
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${score}`, 20, 30);
+    ctx.fillText(`Lives: ${lives}`, 20, 55);
+    ctx.fillText(`Level: ${level}`, 20, 80);
+  };
+
+  /* --------------------------------------------------------------
+     Main loop driver
+     -------------------------------------------------------------- */
+  let last = performance.now();
+  const loop = (now) => {
+    const dt = (now - last) / 1000;
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+
+  /* --------------------------------------------------------------
+     Intro overlay
+     -------------------------------------------------------------- */
+  overlay.innerHTML = `<h1>STAR WARS ARCADE</h1>
+    <p>Move: Arrow keys &nbsp;&nbsp;Fire: Space</p>
+    <p>Press any key to start</p>`;
+  const anyKey = () => {
+    overlay.innerHTML = '';
+    window.removeEventListener('keydown', anyKey);
+  };
+  window.addEventListener('keydown', anyKey);
+})();
+</script>
+</body>
+</html>

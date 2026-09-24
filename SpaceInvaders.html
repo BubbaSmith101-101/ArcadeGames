@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Space Invaders – HTML5</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:sans-serif;}
+  canvas{display:block;margin:auto;background:#000;}
+  #overlay{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;text-align:center;pointer-events:none;
+    font-size:24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay"></div>
+
+<script>
+(() => {
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  const overlay = document.getElementById('overlay');
+
+  /* --------------------------------------------------------------
+     Resize canvas to fill the whole window
+     -------------------------------------------------------------- */
+  const resize = () => { c.width = window.innerWidth; c.height = window.innerHeight; };
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* --------------------------------------------------------------
+     Small helper functions
+     -------------------------------------------------------------- */
+  const rand = (a,b) => Math.random() * (b-a) + a;
+  const wrap = (v, max) => (v + max) % max;
+  const dist = (x1,y1,x2,y2) => Math.hypot(x2-x1, y2-y1);
+
+  /* --------------------------------------------------------------
+     Game state variables
+     -------------------------------------------------------------- */
+  let player, playerShots, aliens, alienShots, bunkers;
+  let keys = {};
+  let score = 0, lives = 3, wave = 1, gameOver = false, paused = false;
+  let alienMoveTimer = 0;   // counts frames until the next alien step
+  let alienDir = 1;         // 1 = right, -1 = left
+
+  /* --------------------------------------------------------------
+     Player ship
+     -------------------------------------------------------------- */
+  const initPlayer = () => ({
+    x: c.width/2,
+    y: c.height*0.92,
+    w: 30,
+    h: 15,
+    speed: 5,
+    cooldown: 0,            // frames until next shot allowed
+    explode:0               // explosion timer (0 = alive)
+  });
+
+  /* --------------------------------------------------------------
+     Player laser
+     -------------------------------------------------------------- */
+  const makeShot = (x,y) => ({
+    x, y,
+    w: 2,
+    h: 10,
+    speed: 7,
+    life: 0                 // for auto‑removal after a while
+  });
+
+  /* --------------------------------------------------------------
+     Alien definition (simple rectangle)
+     -------------------------------------------------------------- */
+  const makeAlien = (x,y) => ({
+    x, y,
+    w: 28,
+    h: 18,
+    alive:true
+  });
+
+  /* --------------------------------------------------------------
+     Alien laser
+     -------------------------------------------------------------- */
+  const makeAlienShot = (x,y) => ({
+    x, y,
+    w: 2,
+    h: 10,
+    speed: 4,
+    life: 0
+  });
+
+  /* --------------------------------------------------------------
+     Bunker (protective block)
+     -------------------------------------------------------------- */
+  const makeBunker = (x,y) => ({
+    x, y,
+    w: 45,
+    h: 30,
+    hp: 6                  // each hit removes 1 “layer”
+  });
+
+  /* --------------------------------------------------------------
+     Create the first wave of aliens (rows × columns)
+     -------------------------------------------------------------- */
+  function createAliens() {
+    const rows = 4 + wave;               // more rows each wave
+    const cols = 10;
+    const xMargin = 60;
+    const yMargin = 80;
+    const hSpacing = 50;
+    const vSpacing = 45;
+    const startX = (c.width - (cols-1)*hSpacing)/2;
+
+    aliens = [];
+    for(let r=0;r<rows;r++){
+      for(let col=0;col<cols;col++){
+        const x = startX + col*hSpacing;
+        const y = yMargin + r*vSpacing;
+        aliens.push(makeAlien(x, y));
+      }
+    }
+  }
+
+  /* --------------------------------------------------------------
+     Create three bunkers (the classic “U‑shaped” shields)
+     -------------------------------------------------------------- */
+  function createBunkers(){
+    const bunkerCount = 3;
+    const spacing = c.width/(bunkerCount+1);
+    bunkers = [];
+    for(let i=1;i<=bunkerCount;i++){
+      const x = spacing*i - 22;    // centre bunker
+      const y = c.height*0.75;
+      bunkers.push(makeBunker(x, y));
+    }
+  }
+
+  /* --------------------------------------------------------------
+     Initialise / restart the whole game
+     -------------------------------------------------------------- */
+  function startGame(){
+    player = initPlayer();
+    playerShots = [];
+    alienShots = [];
+    score = 0;
+    lives = 3;
+    wave = 1;
+    gameOver = false;
+    paused = false;
+    alienDir = 1;
+    alienMoveTimer = 0;
+    createAliens();
+    createBunkers();
+    overlay.innerHTML = '';
+  }
+  startGame();
+
+  /* --------------------------------------------------------------
+     Input handling
+     -------------------------------------------------------------- */
+  document.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if(e.code==='KeyP'){
+      paused = !paused;
+      overlay.innerHTML = paused ? '<h1>PAUSED</h1>' : '';
+    }
+    if(e.code==='KeyR' && gameOver){
+      startGame();
+    }
+  });
+  document.addEventListener('keyup', e => keys[e.code] = false);
+
+  /* --------------------------------------------------------------
+     Main update loop (called ~60 times/sec)
+     -------------------------------------------------------------- */
+  const update = (dt) => {
+    if(gameOver || paused) return;
+
+    /* ---- Player movement ------------------------------------------------ */
+    if(keys['ArrowLeft'])  player.x -= player.speed;
+    if(keys['ArrowRight']) player.x += player.speed;
+    // keep inside screen
+    player.x = Math.max(player.w/2, Math.min(c.width-player.w/2, player.x));
+
+    /* ---- Player shooting ------------------------------------------------ */
+    if(player.cooldown>0) player.cooldown--;
+    if(keys['Space'] && player.cooldown===0 && player.explode===0){
+      // fire from the centre‑top of the ship
+      const shotX = player.x;
+      const shotY = player.y - player.h/2;
+      playerShots.push(makeShot(shotX, shotY));
+      player.cooldown = 12;                 // ~5 shots/sec
+    }
+
+    /* ---- Update player lasers ------------------------------------------- */
+    for(let i=playerShots.length-1;i>=0;i--){
+      const s = playerShots[i];
+      s.y -= s.speed;
+      s.life++;
+      if(s.y < -s.h || s.life > 200) playerShots.splice(i,1);
+    }
+
+    /* ---- Alien movement ------------------------------------------------- */
+    // aliens move as a block; timer determines when they step
+    const alienSpeed = 0.8 + wave*0.2;         // gets faster each wave
+    alienMoveTimer++;
+    if(alienMoveTimer >= Math.round(60/alienSpeed)){
+      // step horizontally
+      const step = 10 * alienDir;
+      let willHitWall = false;
+      aliens.forEach(a => {
+        if(!a.alive) return;
+        a.x += step;
+        if(a.x < 0 || a.x + a.w > c.width) willHitWall = true;
+      });
+      if(willHitWall){
+        // reverse direction and move down instead
+        alienDir *= -1;
+        aliens.forEach(a => {
+          if(!a.alive) return;
+          a.y += 15;                     // descend
+        });
+      }
+      alienMoveTimer = 0;
+    }
+
+    /* ---- Alien shooting ------------------------------------------------- */
+    // Randomly pick a column that has at least one alive alien, then fire from the lowest alien in that column
+    if(Math.random() < 0.015 + wave*0.003){ // probability grows with wave
+      const columns = {};
+      aliens.forEach(a => {
+        if(!a.alive) return;
+        const col = Math.round(a.x / 10); // coarse column index
+        if(!columns[col] || columns[col].y < a.y) columns[col] = a;
+      });
+      const colKeys = Object.keys(columns);
+      if(colKeys.length){
+        const chosen = columns[colKeys[Math.floor(Math.random()*colKeys.length)]];
+        alienShots.push(makeAlienShot(chosen.x + chosen.w/2, chosen.y + chosen.h));
+      }
+    }
+
+    /* ---- Update alien lasers ------------------------------------------- */
+    for(let i=alienShots.length-1;i>=0;i--){
+      const s = alienShots[i];
+      s.y += s.speed;
+      s.life++;
+      if(s.y > c.height + s.h || s.life > 300) alienShots.splice(i,1);
+    }
+
+    /* ---- Collisions ---------------------------------------------------- */
+    // Player shot ↔ alien
+    for(let i=playerShots.length-1;i>=0;i--){
+      const s = playerShots[i];
+      for(let j=aliens.length-1;j>=0;j--){
+        const a = aliens[j];
+        if(!a.alive) continue;
+        if(s.x > a.x && s.x < a.x+a.w && s.y > a.y && s.y < a.y+a.h){
+          a.alive = false;
+          playerShots.splice(i,1);
+          score += 10;
+          break;
+        }
+      }
+    }
+
+    // Player shot ↔ bunker
+    for(let i=playerShots.length-1;i>=0;i--){
+      const s = playerShots[i];
+      for(let b of bunkers){
+        if(s.x > b.x && s.x < b.x+b.w && s.y > b.y && s.y < b.y+b.h){
+          b.hp = Math.max(0, b.hp-1);
+          playerShots.splice(i,1);
+          break;
+        }
+      }
+    }
+
+    // Alien shot ↔ bunker / player
+    for(let i=alienShots.length-1;i>=0;i--){
+      const s = alienShots[i];
+      // bunker first
+      let hitBunker = false;
+      for(let b of bunkers){
+        if(s.x > b.x && s.x < b.x+b.w && s.y > b.y && s.y < b.y+b.h){
+          b.hp = Math.max(0, b.hp-1);
+          hitBunker = true;
+          break;
+        }
+      }
+      if(hitBunker){ alienShots.splice(i,1); continue; }
+
+      // player hit
+      if(player.explode===0 && s.x > player.x-player.w/2 && s.x < player.x+player.w/2 && s.y > player.y-player.h/2 && s.y < player.y+player.h/2){
+        alienShots.splice(i,1);
+        player.explode = 30;                 // 0.5 s explosion
+        lives--;
+        if(lives<=0){
+          gameOver = true;
+          overlay.innerHTML = `<h1>GAME OVER</h1><p>Score: ${score}</p><p>Press R to restart</p>`;
+        }
+        continue;
+      }
+    }
+
+    // Alien reaches bottom or collides with player directly
+    for(let a of aliens){
+      if(!a.alive) continue;
+      if(a.y + a.h >= player.y - player.h/2){
+        // alien touched the player line → instant death
+        player.explode = 30;
+        lives = 0;
+        gameOver = true;
+        overlay.innerHTML = `<h1>GAME OVER</h1><p>Score: ${score}</p><p>Press R to restart</p>`;
+        break;
+      }
+    }
+
+    // Clean up dead aliens
+    aliens = aliens.filter(a => a.alive);
+
+    // Wave cleared → next level
+    if(aliens.length===0 && !gameOver){
+      wave++;
+      alienDir = 1;
+      alienMoveTimer = 0;
+      createAliens();
+    }
+
+    // Explosion timer countdown
+    if(player.explode>0) player.explode--;
+  };
+
+  /* --------------------------------------------------------------
+     Rendering
+     -------------------------------------------------------------- */
+  const draw = () => {
+    ctx.clearRect(0,0,c.width,c.height);
+
+    // ---- Player ship --------------------------------------------------- */
+    if(player.explode>0){
+      const radius = player.w;
+      ctx.fillStyle = `rgba(255,150,0,${player.explode/30})`;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, radius, 0, Math.PI*2);
+      ctx.fill();
+    }else{
+      ctx.fillStyle = '#0af';
+      ctx.fillRect(player.x-player.w/2, player.y-player.h/2, player.w, player.h);
+    }
+
+    // ---- Player lasers ------------------------------------------------- */
+    ctx.fillStyle = '#ff0';
+    playerShots.forEach(s => ctx.fillRect(s.x-1, s.y, s.w, s.h));
+
+    // ---- Aliens -------------------------------------------------------- */
+    ctx.fillStyle = '#f44';
+    aliens.forEach(a => {
+      ctx.fillRect(a.x, a.y, a.w, a.h);
+    });
+
+    // ---- Alien lasers -------------------------------------------------- */
+    ctx.fillStyle = '#f80';
+    alienShots.forEach(s => ctx.fillRect(s.x-1, s.y, s.w, s.h));
+
+    // ---- Bunkers ------------------------------------------------------- */
+    bunkers.forEach(b => {
+      // visual “layers” based on remaining hp
+      const shades = ['#555','#777','#999','#bbb','#ddd','#fff'];
+      const col = shades[Math.max(0, b.hp-1)];
+      ctx.fillStyle = col;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+    });
+
+    // ---- HUD ----------------------------------------------------------- */
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${score}`, 20, 30);
+    ctx.fillText(`Lives: ${lives}`, 20, 55);
+    ctx.fillText(`Wave: ${wave}`, 20, 80);
+  };
+
+  /* --------------------------------------------------------------
+     Main loop driver (requestAnimationFrame)
+     -------------------------------------------------------------- */
+  let last = performance.now();
+  const loop = (now) => {
+    const dt = (now - last) / 1000; // seconds, not used directly now
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+
+  /* --------------------------------------------------------------
+     Intro overlay – disappears on first key press
+     -------------------------------------------------------------- */
+  overlay.innerHTML = `<h1>SPACE INVADERS</h1>
+    <p>← / → to move Space to fire</p>
+    <p>Press any key to start</p>`;
+  const firstKey = () => {
+    overlay.innerHTML = '';
+    window.removeEventListener('keydown', firstKey);
+  };
+  window.addEventListener('keydown', firstKey);
+})();
+</script>
+</body>
+</html>

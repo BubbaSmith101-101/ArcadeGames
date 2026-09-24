@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxia Web</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050505;
+            color: #fff;
+            font-family: 'Press Start 2P', cursive; /* Retro font */
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 20px #00ffff;
+            border: 4px solid #00ffff;
+        }
+
+        canvas {
+            display: block;
+            background: radial-gradient(circle at bottom, #1a1a2e 0%, #000000 100%);
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let clicks pass through to canvas if needed */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .hud {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 20px;
+            text-shadow: 2px 2px #000;
+        }
+
+        #start-screen, #game-over-screen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 40px;
+            border: 2px solid #00ffff;
+            border-radius: 10px;
+            pointer-events: auto;
+        }
+
+        h1 {
+            color: #00ffff;
+            text-shadow: 0 0 10px #00ffff;
+            margin-bottom: 20px;
+            font-size: 40px;
+            line-height: 1.5;
+        }
+
+        p {
+            color: #ccc;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        button {
+            margin-top: 30px;
+            padding: 15px 30px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 16px;
+            background: #00ffff;
+            border: none;
+            color: #000;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            background: #fff;
+            box-shadow: 0 0 15px #fff;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .controls-hint {
+            margin-top: 20px;
+            font-size: 10px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <div id="ui-layer">
+            <div class="hud">
+                <div id="score-display">SCORE: 0</div>
+                <div id="lives-display">LIVES: 3</div>
+            </div>
+
+            <div id="start-screen">
+                <h1>GALAXIA</h1>
+                <p>Defend the galaxy from the alien invasion!</p>
+                <p>Move: <strong>Arrow Keys</strong> or <strong>A/D</strong><br>Fire: <strong>Spacebar</strong></p>
+                <button id="start-btn">START MISSION</button>
+                <div class="controls-hint">Press 'P' to Pause</div>
+            </div>
+
+            <div id="game-over-screen" class="hidden">
+                <h1 style="color: #ff0055; text-shadow: 0 0 10px #ff0055;">GAME OVER</h1>
+                <p>Final Score: <span id="final-score">0</span></p>
+                <button id="restart-btn">TRY AGAIN</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION & SETUP ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game State
+        let gameLoopId;
+        let score = 0;
+        let lives = 3;
+        let level = 1;
+        let isGameOver = false;
+        let isPaused = false;
+        let frames = 0;
+
+        // Inputs
+        const keys = {
+            ArrowLeft: false,
+            ArrowRight: false,
+            a: false,
+            d: false,
+            Space: false,
+            " ": false
+        };
+
+        // Entities
+        let player;
+        let projectiles = [];
+        let enemies = [];
+        let particles = [];
+        let stars = [];
+
+        // --- CLASSES ---
+
+        class Star {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.size = Math.random() * 2;
+                this.speed = Math.random() * 3 + 0.5;
+                this.brightness = Math.random();
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > canvas.height) {
+                    this.y = 0;
+                    this.x = Math.random() * canvas.width;
+                }
+                // Twinkle effect
+                this.brightness = 0.5 + Math.random() * 0.5;
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.brightness})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        class Player {
+            constructor() {
+                this.width = 40;
+                this.height = 30;
+                this.x = canvas.width / 2 - this.width / 2;
+                this.y = canvas.height - 50;
+                this.speed = 7;
+                this.color = '#00ffff';
+                this.lastShot = 0;
+                this.shootDelay = 25; // Frames between shots
+                this.invulnerable = 0; // Frames of invulnerability
+            }
+
+            update() {
+                // Movement
+                if ((keys.ArrowLeft || keys.a) && this.x > 0) {
+                    this.x -= this.speed;
+                }
+                if ((keys.ArrowRight || keys.d) && this.x + this.width < canvas.width) {
+                    this.x += this.speed;
+                }
+
+                // Shooting
+                if (keys.Space || keys[" "]) {
+                    if (frames - this.lastShot > this.shootDelay) {
+                        this.shoot();
+                        this.lastShot = frames;
+                    }
+                }
+
+                if (this.invulnerable > 0) this.invulnerable--;
+            }
+
+            shoot() {
+                // Create two projectiles for a dual-shot feel
+                projectiles.push(new Projectile(this.x, this.y));
+                projectiles.push(new Projectile(this.x + this.width, this.y));
+            }
+
+            draw() {
+                // Blink if invulnerable
+                if (this.invulnerable > 0 && Math.floor(frames / 5) % 2 === 0) return;
+
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                
+                // Ship Body (Classic Geometric Shape)
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = this.color;
+                
+                // Main Hull
+                ctx.beginPath();
+                ctx.moveTo(this.width / 2, 0); // Nose
+                ctx.lineTo(this.width, this.height); // Right Wing back
+                ctx.lineTo(this.width / 2, this.height - 10); // Engine indent
+                ctx.lineTo(0, this.height); // Left Wing back
+                ctx.closePath();
+                ctx.fill();
+
+                // Cockpit
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(this.width / 2, this.height / 3, 5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Engine Flame
+                ctx.fillStyle = `rgba(255, 100, 0, ${Math.random()})`;
+                ctx.beginPath();
+                ctx.moveTo(10, this.height);
+                ctx.lineTo(this.width / 2, this.height + 15 + Math.random() * 5);
+                ctx.lineTo(this.width - 10, this.height);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        class Projectile {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 3;
+                this.speed = 10;
+                this.color = '#ffff00';
+                this.markedForDeletion = false;
+            }
+
+            update() {
+                this.y -= this.speed;
+                if (this.y < 0) this.markedForDeletion = true;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0; // Reset
+            }
+        }
+
+        class Enemy {
+            constructor() {
+                this.width = 35;
+                this.height = 25;
+                this.x = Math.random() * (canvas.width - this.width);
+                this.y = -this.height;
+                // Speed increases slightly with level
+                this.speed = (Math.random() * 2 + 2) + (level * 0.5); 
+                this.color = '#ff0055';
+                this.markedForDeletion = false;
+                this.wobble = Math.random() * Math.PI * 2;
+            }
+
+            update() {
+                this.y += this.speed;
+                this.wobble += 0.1;
+                this.x += Math.sin(this.wobble) * 2; // Slight snake movement
+
+                // Boundary check
+                if (this.x < 0) this.x = 0;
+                if (this.x > canvas.width - this.width) this.x = canvas.width - this.width;
+
+                if (this.y > canvas.height) {
+                    this.markedForDeletion = true;
+                    // Penalty for letting enemy pass? Optional.
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = this.color;
+
+                // Alien Bug Shape
+                ctx.beginPath();
+                ctx.moveTo(0, this.height/2);
+                ctx.lineTo(this.width/4, 0); // Top left
+                ctx.lineTo(this.width/2, this.height/2); // Mid
+                ctx.lineTo(this.width*0.75, 0); // Top right
+                ctx.lineTo(this.width, this.height/2);
+                ctx.lineTo(this.width, this.height); // Bottom Right
+                ctx.lineTo(this.width/2, this.height - 5); // Bottom Center indent
+                ctx.lineTo(0, this.height); // Bottom Left
+                ctx.closePath();
+                ctx.fill();
+
+                // Eyes
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(this.width/4, 5, 4, 4);
+                ctx.fillRect(this.width*0.75 - 4, 5, 4, 4);
+
+                ctx.restore();
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 3 + 1;
+                this.speedX = Math.random() * 6 - 3;
+                this.speedY = Math.random() * 6 - 3;
+                this.color = color;
+                this.life = 1.0; // Opacity
+                this.decay = 0.02;
+            }
+
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.life -= this.decay;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+                ctx.restore();
+            }
+        }
+
+        // --- GAME FUNCTIONS ---
+
+        function initStars() {
+            stars = [];
+            for(let i=0; i<100; i++) {
+                stars.push(new Star());
+            }
+        }
+
+        function spawnEnemies() {
+            // Spawn rate increases as levels go up
+            let spawnRate = 60 - (level * 5); 
+            if (spawnRate < 20) spawnRate = 20;
+
+            if (frames % spawnRate === 0) {
+                enemies.push(new Enemy());
+            }
+        }
+
+        function createExplosion(x, y, color) {
+            for (let i = 0; i < 15; i++) {
+                particles.push(new Particle(x, y, color));
+            }
+        }
+
+        function checkCollisions() {
+            // Projectiles hitting Enemies
+            projectiles.forEach(proj => {
+                enemies.forEach(enemy => {
+                    if (!proj.markedForDeletion && !enemy.markedForDeletion) {
+                        if (
+                            proj.x > enemy.x &&
+                            proj.x < enemy.x + enemy.width &&
+                            proj.y > enemy.y &&
+                            proj.y < enemy.y + enemy.height
+                        ) {
+                            enemy.markedForDeletion = true;
+                            proj.markedForDeletion = true;
+                            createExplosion(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#ffaa00');
+                            score += 100;
+                            document.getElementById('score-display').innerText = `SCORE: ${score}`;
+                        }
+                    }
+                });
+            });
+
+            // Enemies hitting Player
+            enemies.forEach(enemy => {
+                if (!enemy.markedForDeletion) {
+                    if (
+                        player.x < enemy.x + enemy.width &&
+                        player.x + player.width > enemy.x &&
+                        player.y < enemy.y + enemy.height &&
+                        player.y + player.height > enemy.y
+                    ) {
+                        if (player.invulnerable <= 0) {
+                            enemy.markedForDeletion = true;
+                            createExplosion(player.x + player.width/2, player.y + player.height/2, '#00ffff');
+                            createExplosion(enemy.x, enemy.y, '#ff0055');
+                            lives--;
+                            document.getElementById('lives-display').innerText = `LIVES: ${lives}`;
+                            player.invulnerable = 120; // 2 seconds invulnerability (60fps)
+
+                            if (lives <= 0) {
+                                endGame();
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateLevel() {
+            // Simple level logic: Level up every 1000 points
+            const newLevel = Math.floor(score / 1000) + 1;
+            if (newLevel > level) {
+                level = newLevel;
+                // Visual flair for level up
+                const levelText = document.createElement('div');
+                levelText.innerText = "LEVEL " + level;
+                levelText.style.position = 'absolute';
+                levelText.style.top = '40%';
+                levelText.style.width = '100%';
+                levelText.style.textAlign = 'center';
+                levelText.style.fontSize = '40px';
+                levelText.style.color = '#fff';
+                levelText.style.textShadow = '0 0 20px #00ffff';
+                document.body.appendChild(levelText);
+                setTimeout(() => levelText.remove(), 2000);
+            }
+        }
+
+        function gameLoop() {
+            if (isGameOver || isPaused) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. Background
+            stars.forEach(star => {
+                star.update();
+                star.draw();
+            });
+
+            // 2. Player
+            player.update();
+            player.draw();
+
+            // 3. Projectiles
+            projectiles.forEach((p, index) => {
+                p.update();
+                p.draw();
+                if (p.markedForDeletion) projectiles.splice(index, 1);
+            });
+
+            // 4. Enemies
+            spawnEnemies();
+            enemies.forEach((e, index) => {
+                e.update();
+                e.draw();
+                if (e.markedForDeletion) enemies.splice(index, 1);
+            });
+
+            // 5. Particles
+            particles.forEach((p, index) => {
+                p.update();
+                p.draw();
+                if (p.life <= 0) particles.splice(index, 1);
+            });
+
+            // 6. Logic
+            checkCollisions();
+            updateLevel();
+
+            frames++;
+            gameLoopId = requestAnimationFrame(gameLoop);
+        }
+
+        function startGame() {
+            // Reset variables
+            score = 0;
+            lives = 3;
+            level = 1;
+            frames = 0;
+            isGameOver = false;
+            projectiles = [];
+            enemies = [];
+            particles = [];
+            
+            player = new Player();
+            initStars();
+
+            // UI Updates
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('game-over-screen').classList.add('hidden');
+            document.getElementById('score-display').innerText = "SCORE: 0";
+            document.getElementById('lives-display').innerText = "LIVES: 3";
+
+            if (gameLoopId) cancelAnimationFrame(gameLoopId);
+            gameLoop();
+        }
+
+        function endGame() {
+            isGameOver = true;
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('game-over-screen').classList.remove('hidden');
+        }
+
+        function togglePause() {
+            if (isGameOver) return;
+            
+            isPaused = !isPaused;
+            if (isPaused) {
+                ctx.fillStyle = "rgba(0,0,0,0.7)";
+                ctx.fillRect(0,0,canvas.width, canvas.height);
+                ctx.fillStyle = "#fff";
+                ctx.font = "30px 'Press Start 2P'";
+                ctx.textAlign = "center";
+                ctx.fillText("PAUSED", canvas.width/2, canvas.height/2);
+            } else {
+                gameLoop();
+            }
+        }
+
+        // --- EVENT LISTENERS ---
+
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key)) keys[e.key] = true;
+            if (e.key == 'p' || e.key === 'P') togglePause();
+            if (e.key === 'ArrowUp') player.shoot(); // Quick fire on up arrow too
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) keys[e.key] = false;
+        });
+
+        document.getElementById('start-btn').addEventListener('click', startGame);
+        document.getElementById('restart-btn').addEventListener('click', startGame);
+
+        // Initialize Stars on load
+        initStars();
+        // Draw initial background for menu
+        stars.forEach(star => star.draw());
+
+    </script>
+</body>
+</html>
