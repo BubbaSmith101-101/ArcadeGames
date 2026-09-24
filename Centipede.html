@@ -1,705 +1,400 @@
-You are absolutely right. That error occurs because when a Centipede splits, the code attempts to remove dead segments. If the **Head** of the Centipede is hit, the entire `this.segments` array becomes empty (`[]`). However, the game loop continues to call `.update()` on that Centipede object, and the update function tries to access the properties of the first segment (`this.segments[0]`), which no longer exists.
-
-Here is the fixed, fully functional code. I have repaired the logic to ensure that when a Centipede dies (Head is hit), it is completely removed from the game array, preventing the crash.
-
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Retro Centipede HTML (Fixed)</title>
-    <style>
-        body {
-            background-color: #222;
-            color: white;
-            font-family: 'Courier New', Courier, monospace;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            overflow: hidden;
-        }
-
-        h1 { margin-bottom: 10px; text-shadow: 2px 2px #000; }
-        
-        #game-container {
-            position: relative;
-            box-shadow: 0 0 20px rgba(0,0,0,0.8);
-            border: 4px solid #555;
-        }
-
-        canvas {
-            background-color: #000;
-            display: block;
-            cursor: crosshair;
-        }
-
-        #ui-layer {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            right: 10px;
-            display: flex;
-            justify-content: space-between;
-            pointer-events: none;
-            font-size: 20px;
-            font-weight: bold;
-            text-shadow: 1px 1px 0 #000;
-            color: #fff;
-        }
-
-        #start-screen, #game-over-screen {
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.85);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            z-index: 10;
-        }
-
-        button {
-            padding: 15px 30px;
-            font-size: 24px;
-            font-family: inherit;
-            background-color: #e74c3c;
-            color: white;
-            border: none;
-            cursor: pointer;
-            margin-top: 20px;
-            border-radius: 5px;
-            transition: background 0.2s;
-        }
-
-        button:hover { background-color: #c0392b; }
-        
-        .controls-hint { margin-top: 20px; font-size: 14px; color: #aaa; text-align: center;}
-        
-        /* Security warning style */
-        #security-note {
-            position: fixed;
-            bottom: 10px;
-            font-size: 10px;
-            color: #666;
-        }
-    </style>
+<meta charset="UTF-8">
+<title>Centipede – HTML5 Canvas (with initial mushrooms)</title>
+<style>
+  body{
+    margin:0;
+    background:#000;
+    color:#fff;
+    font-family:Arial,Helvetica,sans-serif;
+    overflow:hidden;
+    user-select:none;
+  }
+  #gameCanvas{
+    display:block;
+    margin:0 auto;
+    background:#111;
+    border:2px solid #555;
+  }
+  #overlay{
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:2rem;
+    color:#fff;
+    background:rgba(0,0,0,0.7);
+    pointer-events:none;
+  }
+</style>
 </head>
 <body>
-
-    <h1>CENTIPEDE HTML</h1>
-
-    <div id="game-container">
-        <canvas id="gameCanvas" width="800" height="600"></canvas>
-        
-        <div id="ui-layer">
-            <div id="scoreDisplay">SCORE: 0</div>
-            <div id="livesDisplay">LIVES: 3</div>
-        </div>
-
-        <div id="start-screen">
-            <h1 style="font-size: 60px; color: #e74c3c; margin:0;">CENTIPEDE</h1>
-            <p>Defend the garden from the creeping pest!</p>
-            <button onclick="startGame()">INSERT COIN (START)</button>
-            <div class="controls-hint">
-                ARROWS to Move &bull; SPACE to Shoot<br>
-                Avoid Mushrooms &bull; Don't let the bug reach the bottom!
-            </div>
-        </div>
-
-        <div id="game-over-screen" style="display: none;">
-            <h1 style="font-size: 60px; color: #fff; margin:0;">GAME OVER</h1>
-            <h2 id="final-score" style="color: #f1c40f; font-size: 40px;">SCORE: 0</h2>
-            <button onclick="resetGame()">PLAY AGAIN</button>
-        </div>
-    </div>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+<div id="overlay"></div>
 
 <script>
-/**
- * GAME CONFIGURATION
- */
+/* --------------------------------------------------------------
+   CENTIPEDE – tiny playable clone (now with initial mushrooms)
+   --------------------------------------------------------------
+   Controls
+   --------------------------------------------------------------
+   ← / →  : Move the shooter left / right
+   Space   : Fire
+   P       : Pause / un‑pause
+   --------------------------------------------------------------*/
+
 const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+const ctx    = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
 
-const GAME_WIDTH = 800;
-const GAME_HEIGHT = 600;
-const GRID_SIZE = 25;
-const PLAYER_SPEED = 5;
-const BULLET_SPEED = 10;
-const ENEMY_BASE_SPEED = 1.5;
+const WIDTH  = canvas.width;
+const HEIGHT = canvas.height;
 
-// Game State
-let gameLoopId;
+// ----------------------------------------------------------
+// Game constants
+// ----------------------------------------------------------
+const PLAYER_SPEED    = 4;
+const BULLET_SPEED    = 8;
+const CENTIPEDE_SPEED = 2;          // horizontal pixels per frame
+const CENTIPEDE_DROP  = 16;         // vertical drop when turning
+const MUSHROOM_SIZE   = 8;
+const MAX_MUSHROOMS   = 250;
+
+// ----------------------------------------------------------
+// Game state
+// ----------------------------------------------------------
+let keys = {};
 let score = 0;
 let lives = 3;
+let level = 1;
 let gameOver = false;
-let frameCount = 0;
+let paused = false;
 
-// Entities
-let player;
-let bullets = [];
-let enemies = []; 
-let mushrooms = [];
-let spider = null;
-let spiderTimer = 0;
-
-// Inputs
-const keys = {};
-
-// Audio
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-function playSound(type) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    const now = audioCtx.currentTime;
-
-    if (type === 'shoot') {
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(800, now);
-        osc.frequency.exponentialRampToValueAtTime(100, now + 0.15);
-        gain.gain.setValueAtTime(0.1, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
-        osc.start(now);
-        osc.stop(now + 0.15);
-    } else if (type === 'hit') {
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(200, now);
-        osc.frequency.linearRampToValueAtTime(50, now + 0.1);
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.linearRampToValueAtTime(0.01, now + 0.1);
-        osc.start(now);
-        osc.stop(now + 0.1);
-    } else if (type === 'explode') {
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(100, now);
-        osc.frequency.exponentialRampToValueAtTime(0.01, now + 0.5);
-        gain.gain.setValueAtTime(0.3, now);
-        gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
-        osc.start(now);
-        osc.stop(now + 0.5);
-    } else if (type === 'spider') {
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(300, now);
-        osc.frequency.linearRampToValueAtTime(600, now + 0.2);
-        gain.gain.setValueAtTime(0.1, now);
-        gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
-        osc.start(now);
-        osc.stop(now + 0.2);
-    }
+// ----------------------------------------------------------
+// Helper utilities
+// ----------------------------------------------------------
+function rectCollision(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
-/**
- * CLASSES
- */
-
+// ----------------------------------------------------------
+// Player (the “shooter”)
+// ----------------------------------------------------------
 class Player {
-    constructor() {
-        this.width = 30;
-        this.height = 30;
-        this.x = GAME_WIDTH / 2 - this.width / 2;
-        this.y = GAME_HEIGHT - 50;
-        this.color = '#3498db';
-        this.shootTimer = 0;
-        this.shootDelay = 20;
-    }
+  constructor() {
+    this.width  = 20;
+    this.height = 12;
+    this.x = (WIDTH - this.width) / 2;
+    this.y = HEIGHT - this.height - 8;
+    this.color = '#0f0';
+    this.canShoot = true;
+    this.shootCooldown = 0;
+  }
+  update() {
+    if (keys['ArrowLeft']  && this.x > 0)               this.x -= PLAYER_SPEED;
+    if (keys['ArrowRight'] && this.x + this.width < WIDTH) this.x += PLAYER_SPEED;
 
-    update() {
-        if (keys['ArrowLeft'] && this.x > 0) this.x -= PLAYER_SPEED;
-        if (keys['ArrowRight'] && this.x < GAME_WIDTH - this.width) this.x += PLAYER_SPEED;
-        if (keys['ArrowUp'] && this.y > GAME_HEIGHT - 150) this.y -= PLAYER_SPEED; 
-        if (keys['ArrowDown'] && this.y < GAME_HEIGHT - this.height) this.y += PLAYER_SPEED;
-
-        if (this.shootTimer > 0) this.shootTimer--;
-        if (keys[' '] && this.shootTimer <= 0) {
-            bullets.push(new Bullet(this.x + this.width / 2 - 2, this.y));
-            this.shootTimer = this.shootDelay;
-            playSound('shoot');
-        }
+    // shooting
+    if (keys[' '] && this.canShoot) {
+      bullets.push(new Bullet(this.x + this.width/2, this.y));
+      this.canShoot = false;
+      this.shootCooldown = 12;
     }
-
-    draw() {
-        ctx.fillStyle = this.color;
-        ctx.fillRect(this.x, this.y + 10, this.width, 20); 
-        ctx.fillRect(this.x + 10, this.y, 10, 10); 
-        ctx.fillStyle = '#ecf0f1';
-        ctx.beginPath();
-        ctx.arc(this.x + 15, this.y + 5, 3, 0, Math.PI * 2);
-        ctx.fill();
+    if (!this.canShoot) {
+      this.shootCooldown--;
+      if (this.shootCooldown <= 0) this.canShoot = true;
     }
+  }
+  draw() {
+    ctx.fillStyle = this.color;
+    ctx.fillRect(this.x, this.y, this.width, this.height);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(this.x + this.width/2 - 2, this.y - 4, 4, 4);
+  }
 }
 
+// ----------------------------------------------------------
+// Bullet
+// ----------------------------------------------------------
 class Bullet {
-    constructor(x, y) {
-        this.x = x;
-        this.y = y;
-        this.width = 4;
-        this.height = 10;
-        this.markedForDeletion = false;
-    }
-
-    update() {
-        this.y -= BULLET_SPEED;
-        if (this.y < 0) this.markedForDeletion = true;
-    }
-
-    draw() {
-        ctx.fillStyle = '#e74c3c';
-        ctx.fillRect(this.x, this.y, this.width, this.height);
-    }
+  constructor(x, y) {
+    this.x = x - 2;
+    this.y = y;
+    this.width = 4;
+    this.height = 10;
+    this.color = '#ff0';
+    this.active = true;
+  }
+  update() {
+    this.y -= BULLET_SPEED;
+    if (this.y + this.height < 0) this.active = false;
+  }
+  draw() {
+    ctx.fillStyle = this.color;
+    ctx.fillRect(this.x, this.y, this.width, this.height);
+  }
 }
 
-class Centipede {
-    constructor() {
-        this.segments = [];
-        this.direction = 1; 
-        this.speed = ENEMY_BASE_SPEED;
-        this.dropDistance = 25; 
-        
-        // Initialize Head and Body
-        let startX = 0;
-        // Create a full row length initially, but head starts at left
-        for (let i = 0; i < 24; i++) {
-            this.segments.push({
-                x: i * this.dropDistance, // Initialize in a row
-                y: 50,
-                isHead: i === 0,
-                color: i === 0 ? '#f1c40f' : '#f39c12'
-            });
-        }
-    }
-
-    update() {
-        // CRITICAL FIX: Check if array is empty before accessing index 0
-        if (this.segments.length === 0) return;
-
-        const head = this.segments[0];
-        let hitWall = false;
-        let hitMushroom = false;
-
-        if ((head.x + GRID_SIZE > GAME_WIDTH && this.direction === 1) ||
-            (head.x < 0 && this.direction === -1)) {
-            hitWall = true;
-        }
-
-        for (let m of mushrooms) {
-            if (rectIntersect(head.x, head.y, GRID_SIZE, GRID_SIZE, m.x, m.y, m.size, m.size)) {
-                hitMushroom = true;
-                break;
-            }
-        }
-
-        if (hitWall || hitMushroom) {
-            this.direction *= -1;
-            this.segments.forEach(seg => {
-                seg.y += this.dropDistance;
-                if(hitMushroom) seg.x += (this.direction * GRID_SIZE);
-            });
-        } else {
-            this.segments.forEach(seg => {
-                seg.x += this.speed * this.direction;
-            });
-        }
-
-        // Collision with Player
-        this.segments.forEach(seg => {
-            if (rectIntersect(seg.x, seg.y, GRID_SIZE, GRID_SIZE, player.x, player.y, player.width, player.height)) {
-                handlePlayerHit();
-            }
-        });
-    }
-
-    draw() {
-        if (this.segments.length === 0) return;
-
-        this.segments.forEach(seg => {
-            ctx.fillStyle = seg.color;
-            ctx.fillRect(seg.x, seg.y, GRID_SIZE, GRID_SIZE);
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(seg.x, seg.y, GRID_SIZE, GRID_SIZE);
-            
-            if (!seg.isHead) {
-                ctx.beginPath();
-                ctx.moveTo(seg.x, seg.y + 5);
-                ctx.lineTo(seg.x, seg.y + 20);
-                ctx.moveTo(seg.x + GRID_SIZE, seg.y + 5);
-                ctx.lineTo(seg.x + GRID_SIZE, seg.y + 20);
-                ctx.stroke();
-            } else {
-                ctx.fillStyle = 'black';
-                ctx.fillRect(seg.x + 5, seg.y + 5, 5, 5);
-                ctx.fillRect(seg.x + 15, seg.y + 5, 5, 5);
-            }
-        });
-    }
-
-    hit(targetX, targetY) {
-        // Iterate backwards to safely remove items if necessary
-        // (Though here we usually just split the array)
-        for (let i = 0; i < this.segments.length; i++) {
-            let seg = this.segments[i];
-            if (rectIntersect(targetX, targetY, 4, 10, seg.x, seg.y, GRID_SIZE, GRID_SIZE)) {
-                playSound('hit');
-                
-                // If we hit the head
-                if (i === 0) {
-                    // Entire snake dies
-                    score += 10;
-                    updateUI();
-                    this.segments = []; // Empty array
-                    return true; // Indicate a kill
-                } 
-                
-                // If we hit the body
-                // 1. The part below the hit becomes a new centipede moving down
-                let severedTail = this.segments.slice(i + 1);
-                
-                // 2. The part above the hit (including head) continues
-                this.segments = this.segments.slice(0, i);
-                
-                // 3. Turn the hit segment into a mushroom
-                mushrooms.push(new Mushroom(seg.x, seg.y));
-                
-                // 4. If we have a tail, create a new Centipede object for it
-                if (severedTail.length > 0) {
-                    let newCentipede = new Centipede();
-                    // Replace the newly created centipede's segments with our severed tail
-                    // We have to re-align them to match the cut point
-                    newCentipede.segments = severedTail;
-                    // Ensure the new head starts moving correctly
-                    newCentipede.segments.forEach((s, idx) => {
-                        s.isHead = (idx === 0);
-                        s.color = (idx === 0) ? '#f1c40f' : '#f39c12';
-                    });
-                    // Randomize direction of new tail
-                    newCentipede.direction = Math.random() > 0.5 ? 1 : -1;
-                    
-                    // Add it to the enemies array
-                    enemies.push(newCentipede);
-                }
-
-                score += 5;
-                updateUI();
-                return true;
-            }
-        }
-        return false;
-    }
-}
-
+// ----------------------------------------------------------
+// Mushroom
+// ----------------------------------------------------------
 class Mushroom {
-    constructor(x, y) {
-        this.x = x;
-        this.y = y;
-        this.size = GRID_SIZE;
-        this.health = 4;
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.maxHealth = 4;   // 4 hits to destroy
+    this.health = this.maxHealth;
+  }
+  hit() {
+    this.health--;
+    if (this.health <= 0) {
+      const i = mushrooms.indexOf(this);
+      if (i >= 0) mushrooms.splice(i, 1);
     }
-
-    draw() {
-        ctx.fillStyle = '#e74c3c';
-        ctx.beginPath();
-        ctx.arc(this.x + this.size/2, this.y + this.size/2, this.size/2, Math.PI, 0);
-        ctx.fill();
-        
-        ctx.fillStyle = '#ecf0f1';
-        ctx.fillRect(this.x + 5, this.y + this.size/2, this.size - 10, this.size/2);
-
-        ctx.fillStyle = '#000';
-        ctx.font = '10px monospace';
-        ctx.fillText(this.health, this.x + 5, this.y + this.size - 5);
-        
-        ctx.strokeStyle = '#000';
-        ctx.strokeRect(this.x, this.y, this.size, this.size);
-    }
-
-    hit() {
-        this.health--;
-        playSound('hit');
-        if (this.health <= 0) {
-            return true;
-        }
-        return false;
-    }
+  }
+  draw() {
+    const shade = 0x33 + (this.maxHealth - this.health) * 0x33;
+    ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+    ctx.fillRect(this.x, this.y, MUSHROOM_SIZE, MUSHROOM_SIZE);
+  }
 }
 
-class Spider {
-    constructor() {
-        this.x = -50;
-        this.y = 50;
-        this.width = 40;
-        this.height = 30;
-        this.speed = 3;
-        this.direction = 1;
-        this.active = false;
-        this.moveTimer = 0;
+// ----------------------------------------------------------
+// Centipede segment
+// ----------------------------------------------------------
+class Segment {
+  constructor(x, y, isHead = false) {
+    this.x = x;
+    this.y = y;
+    this.isHead = isHead;
+    this.dir = 1; // 1 = right, -1 = left
+  }
+  update() {
+    // move horizontally
+    this.x += this.dir * CENTIPEDE_SPEED;
+
+    // turn on wall or mushroom
+    const hitWall = this.x < 0 || this.x + MUSHROOM_SIZE > WIDTH;
+    const hitMush = isMushroomAt(this.x, this.y);
+    if (hitWall || hitMush) {
+      this.x -= this.dir * CENTIPEDE_SPEED; // step back
+      this.y += CENTIPEDE_DROP;            // drop a row
+      this.dir *= -1;                      // reverse direction
     }
 
-    activate() {
-        this.active = true;
-        this.x = 0;
-        this.y = 100;
-        this.direction = 1;
+    // reached the player?
+    if (this.y + MUSHROOM_SIZE >= player.y) loseLife();
+  }
+  draw() {
+    ctx.fillStyle = this.isHead ? '#f00' : '#0ff';
+    ctx.fillRect(this.x, this.y, MUSHROOM_SIZE, MUSHROOM_SIZE);
+  }
+}
+
+// ----------------------------------------------------------
+// Containers for game objects
+// ----------------------------------------------------------
+let player   = new Player();
+let bullets  = [];
+let mushrooms = [];
+let centipede = [];
+
+// ----------------------------------------------------------
+// Helper: is there a mushroom at the given pixel?
+// ----------------------------------------------------------
+function isMushroomAt(px, py) {
+  for (const m of mushrooms) {
+    if (px < m.x + MUSHROOM_SIZE && px + MUSHROOM_SIZE > m.x &&
+        py < m.y + MUSHROOM_SIZE && py + MUSHROOM_SIZE > m.y) {
+      return true;
     }
+  }
+  return false;
+}
 
-    update() {
-        if (!this.active) return;
+// ----------------------------------------------------------
+// Helper – generate a random mushroom field
+// ----------------------------------------------------------
+function generateMushrooms(count = 30) {
+  let attempts = 0;
+  const maxAttempts = count * 10;
 
-        this.moveTimer++;
-        if (this.moveTimer > 30) {
-            this.moveTimer = 0;
-            if (Math.random() > 0.5) this.direction *= -1;
-            this.y += (Math.random() * 40 - 20); 
-        }
+  while (mushrooms.length < count && attempts < maxAttempts) {
+    attempts++;
 
-        this.x += this.speed * this.direction;
+    const mx = Math.floor(Math.random() * (WIDTH / MUSHROOM_SIZE)) * MUSHROOM_SIZE;
+    const my = Math.floor(Math.random() * (HEIGHT / 2 / MUSHROOM_SIZE)) * MUSHROOM_SIZE;
 
-        if (this.x <= 0 || this.x >= GAME_WIDTH - this.width) {
-            this.direction *= -1;
-        }
-        
-        if (this.y < 50) this.y += 2;
-        if (this.y > GAME_HEIGHT - 200) this.y -= 2;
+    // don't put a mushroom on the player
+    const overPlayer = rectCollision(
+      mx, my, MUSHROOM_SIZE, MUSHROOM_SIZE,
+      player.x, player.y, player.width, player.height
+    );
 
-        if (rectIntersect(this.x, this.y, this.width, this.height, player.x, player.y, player.width, player.height)) {
-            handlePlayerHit();
-        }
+    // avoid stacking mushrooms
+    const alreadyThere = isMushroomAt(mx, my);
+
+    if (!overPlayer && !alreadyThere) {
+      mushrooms.push(new Mushroom(mx, my));
     }
-
-    draw() {
-        if (!this.active) return;
-        ctx.fillStyle = '#2c3e50'; 
-        ctx.fillRect(this.x, this.y, this.width, this.height);
-        
-        ctx.strokeStyle = '#000';
-        ctx.lineWidth = 2;
-        for(let i=0; i<4; i++) {
-            ctx.beginPath();
-            ctx.moveTo(this.x + (i*10), this.y);
-            ctx.lineTo(this.x + (i*10) - 10, this.y - 15);
-            ctx.moveTo(this.x + (i*10), this.y + this.height);
-            ctx.lineTo(this.x + (i*10) - 10, this.y + this.height + 15);
-            ctx.stroke();
-        }
-        
-        ctx.fillStyle = 'red';
-        ctx.beginPath();
-        ctx.arc(this.x + 10, this.y + 10, 3, 0, Math.PI*2);
-        ctx.arc(this.x + 30, this.y + 10, 3, 0, Math.PI*2);
-        ctx.fill();
-    }
+  }
 }
 
-/**
- * UTILS
- */
+// ----------------------------------------------------------
+// Spawn a fresh centipede (called at start & after each wave)
+// ----------------------------------------------------------
+function spawnCentipede() {
+  const length = Math.max(10, 12 - level);
+  centipede = [];
 
-function rectIntersect(x1, y1, w1, h1, x2, y2, w2, h2) {
-    return x2 < x1 + w1 && x2 + w2 > x1 && y2 < y1 + h1 && y2 + h2 > y1;
+  // head at the left edge; body follows to the right
+  for (let i = 0; i < length; i++) {
+    const x = i * MUSHROOM_SIZE;
+    centipede.push(new Segment(x, 0, i === 0));
+  }
 }
 
-function createMushroomField() {
-    mushrooms = [];
-    const cols = GAME_WIDTH / GRID_SIZE;
-    const rows = (GAME_HEIGHT - 150) / GRID_SIZE;
-
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            if (Math.random() < 0.15) {
-                if (r < (GAME_HEIGHT - 150) / GRID_SIZE) {
-                    mushrooms.push(new Mushroom(c * GRID_SIZE, r * GRID_SIZE));
-                }
-            }
-        }
-    }
-}
-
-function handlePlayerHit() {
-    playSound('explode');
-    lives--;
-    updateUI();
-    
-    ctx.fillStyle = 'rgba(255,0,0,0.5)';
-    ctx.fillRect(0,0, GAME_WIDTH, GAME_HEIGHT);
-
-    if (lives <= 0) {
-        endGame();
-    } else {
-        player.x = GAME_WIDTH / 2 - player.width / 2;
-        player.y = GAME_HEIGHT - 50;
-        bullets = [];
-        // Clear enemies so player doesn't die instantly
-        enemies = [];
-    }
-}
-
-function updateUI() {
-    document.getElementById('scoreDisplay').innerText = `SCORE: ${score}`;
-    document.getElementById('livesDisplay').innerText = `LIVES: ${lives}`;
-}
-
-function startGame() {
-    document.getElementById('start-screen').style.display = 'none';
-    document.getElementById('game-over-screen').style.display = 'none';
-    
-    score = 0;
-    lives = 3;
-    gameOver = false;
-    bullets = [];
-    enemies = [];
-    spider = new Spider();
-    createMushroomField();
-    player = new Player();
-    
-    enemies.push(new Centipede());
-    
-    updateUI();
-    
-    if (gameLoopId) cancelAnimationFrame(gameLoopId);
-    gameLoop();
-}
-
-function resetGame() {
-    startGame();
-}
-
-function endGame() {
+// ----------------------------------------------------------
+// Player loses a life
+// ----------------------------------------------------------
+function loseLife() {
+  if (gameOver) return;
+  lives--;
+  if (lives <= 0) {
     gameOver = true;
-    cancelAnimationFrame(gameLoopId);
-    document.getElementById('final-score').innerText = `SCORE: ${score}`;
-    document.getElementById('game-over-screen').style.display = 'flex';
+    overlay.textContent = `Game Over – Score ${score}`;
+  } else {
+    player = new Player();
+    bullets = [];
+    paused = true;
+    setTimeout(() => paused = false, 1500);
+  }
 }
 
-/**
- * MAIN GAME LOOP
- */
+// ----------------------------------------------------------
+// Main loop
+// ----------------------------------------------------------
 function gameLoop() {
-    if (gameOver) return;
-
-    ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    // Draw Grid Background
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 0.5;
-    for(let x=0; x<GAME_WIDTH; x+=GRID_SIZE) {
-        ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x, GAME_HEIGHT); ctx.stroke();
-    }
-    for(let y=0; y<GAME_HEIGHT; y+=GRID_SIZE) {
-        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(GAME_WIDTH, y); ctx.stroke();
-    }
-
-    // Draw Bottom Safety Zone
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, GAME_HEIGHT - 150, GAME_WIDTH, 150);
-    ctx.strokeStyle = '#555';
-    ctx.beginPath();
-    ctx.moveTo(0, GAME_HEIGHT - 150);
-    ctx.lineTo(GAME_WIDTH, GAME_HEIGHT - 150);
-    ctx.stroke();
-
-    player.update();
-    player.draw();
-
-    // Update & Draw Bullets
-    for (let i = bullets.length - 1; i >= 0; i--) {
-        let b = bullets[i];
-        b.update();
-        b.draw();
-        if (b.markedForDeletion) {
-            bullets.splice(i, 1);
-        }
-    }
-
-    // Update & Draw Mushrooms
-    for (let i = mushrooms.length - 1; i >= 0; i--) {
-        let m = mushrooms[i];
-        m.draw();
-        
-        for (let bIndex = 0; bIndex < bullets.length; bIndex++) {
-            let b = bullets[bIndex];
-            if (rectIntersect(b.x, b.y, b.width, b.height, m.x, m.y, m.size, m.size)) {
-                if (m.hit()) {
-                    mushrooms.splice(i, 1);
-                }
-                bullets.splice(bIndex, 1);
-                break;
-            }
-        }
-    }
-
-    // Update & Draw Enemies (Centipede)
-    // Iterate backwards to safely remove empty centipedes
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        let enemy = enemies[i];
-        enemy.update();
-        enemy.draw();
-
-        // If this centipede has no segments, remove it from the array
-        if (enemy.segments.length === 0) {
-            enemies.splice(i, 1);
-            // Spawn new centipede after a delay
-            setTimeout(() => {
-                if(!gameOver) enemies.push(new Centipede());
-            }, 2000);
-            continue; // Skip collision checks for dead snake
-        }
-
-        // Bullet vs Enemy Collision
-        for (let bIndex = 0; bIndex < bullets.length; bIndex++) {
-            let b = bullets[bIndex];
-            if (enemy.hit(b.x, b.y)) {
-                bullets.splice(bIndex, 1);
-                score += 20; 
-                updateUI();
-            }
-        }
-    }
-
-    // Spider Logic
-    spiderTimer++;
-    if (spiderTimer > 1200 && !spider.active) { // About 20 seconds
-        spiderTimer = 0;
-        if (Math.random() > 0.5) {
-            spider.activate();
-            playSound('spider');
-        }
-    }
-    spider.update();
-    spider.draw();
-
-    // Spider vs Bullets
-    if (spider.active) {
-        for (let bIndex = 0; bIndex < bullets.length; bIndex++) {
-            let b = bullets[bIndex];
-            if (rectIntersect(b.x, b.y, b.width, b.height, spider.x, spider.y, spider.width, spider.height)) {
-                playSound('explode');
-                spider.active = false;
-                spider.x = -100;
-                score += 500; 
-                updateUI();
-                bullets.splice(bIndex, 1);
-            }
-        }
-    }
-
-    gameLoopId = requestAnimationFrame(gameLoop);
+  if (!paused && !gameOver) {
+    update();
+    draw();
+  }
+  requestAnimationFrame(gameLoop);
 }
 
-// Event Listeners
+// ----------------------------------------------------------
+// Update everything
+// ----------------------------------------------------------
+function update() {
+  player.update();
+
+  // ---- bullets ------------------------------------------------
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.update();
+    if (!b.active) { bullets.splice(i, 1); continue; }
+
+    // hit a mushroom?
+    for (let j = mushrooms.length - 1; j >= 0; j--) {
+      const m = mushrooms[j];
+      if (rectCollision(b.x,b.y,b.width,b.height,
+                        m.x,m.y,MUSHROOM_SIZE,MUSHROOM_SIZE)) {
+        m.hit();
+        b.active = false;
+        bullets.splice(i,1);
+        break;
+      }
+    }
+    if (!b.active) continue;
+
+    // hit a centipede segment?
+    for (let k = centipede.length - 1; k >= 0; k--) {
+      const seg = centipede[k];
+      if (rectCollision(b.x,b.y,b.width,b.height,
+                        seg.x,seg.y,MUSHROOM_SIZE,MUSHROOM_SIZE)) {
+        // turn segment into a mushroom (if free)
+        if (!isMushroomAt(seg.x, seg.y) && mushrooms.length < MAX_MUSHROOMS) {
+          mushrooms.push(new Mushroom(seg.x, seg.y));
+        }
+        // remove the segment
+        centipede.splice(k,1);
+        score += seg.isHead ? 100 : 10;
+        b.active = false;
+        bullets.splice(i,1);
+        break;
+      }
+    }
+  }
+
+  // ---- centipede movement ------------------------------------
+  for (let i = centipede.length - 1; i >= 0; i--) {
+    centipede[i].update();
+  }
+
+  // ---- wave cleared? -----------------------------------------
+  if (centipede.length === 0) {
+    level++;
+    // add a few random mushrooms to make the next level harder
+    for (let i = 0; i < 5 + level; i++) {
+      const mx = Math.floor(Math.random() * (WIDTH / MUSHROOM_SIZE)) * MUSHROOM_SIZE;
+      const my = Math.floor(Math.random() * (HEIGHT/2 / MUSHROOM_SIZE)) * MUSHROOM_SIZE;
+      if (!isMushroomAt(mx, my) &&
+          !rectCollision(mx,my,MUSHROOM_SIZE,MUSHROOM_SIZE,
+                        player.x,player.y,player.width,player.height)) {
+        mushrooms.push(new Mushroom(mx, my));
+      }
+    }
+    spawnCentipede();
+  }
+}
+
+// ----------------------------------------------------------
+// Render everything
+// ----------------------------------------------------------
+function draw() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0,0,WIDTH,HEIGHT);
+
+  // mushrooms
+  for (const m of mushrooms) m.draw();
+
+  // centipede
+  for (const seg of centipede) seg.draw();
+
+  // bullets
+  for (const b of bullets) b.draw();
+
+  // player
+  player.draw();
+
+  // UI
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px monospace';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`Score: ${score}`, 8, 8);
+  ctx.fillText(`Lives: ${lives}`, 8, 28);
+  ctx.fillText(`Level: ${level}`, 8, 48);
+}
+
+// ----------------------------------------------------------
+// Input handling
+// ----------------------------------------------------------
 window.addEventListener('keydown', e => {
-    keys[e.key] = true;
-    if (e.key === ' ' && e.target === document.body) e.preventDefault(); 
+  if (e.key === ' ') e.preventDefault();
+  keys[e.key] = true;
+  if (e.key === 'p') paused = !paused;
 });
+window.addEventListener('keyup', e => keys[e.key] = false);
 
-window.addEventListener('keyup', e => {
-    keys[e.key] = false;
-});
-
+// ---------------------------------------------------------
+// Start the game
+// ----------------------------------------------------------
+spawnCentipede();          // create the first centipede
+generateMushrooms(30);    // <<< NEW: initial mushroom field
+gameLoop();
 </script>
 </body>
 </html>
