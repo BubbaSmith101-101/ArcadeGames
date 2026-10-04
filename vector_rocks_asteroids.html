@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vector Rocks - Browser Arcade</title>
+<style>
+html,body{margin:0;min-height:100%;background:#05070b;color:#fff;font-family:Consolas,monospace}
+body{display:flex;align-items:center;justify-content:center}
+.wrap{width:min(96vw,960px);padding:12px;box-sizing:border-box}
+canvas{display:block;width:100%;height:auto;background:#000;border:3px solid #59606d;box-sizing:border-box;outline:none}
+.controls{text-align:center;color:#d7dbe3;font-size:14px;line-height:1.7;margin-top:7px}
+button{font:inherit;color:#fff;background:#171a20;border:1px solid #9da4b2;padding:7px 13px;margin-left:9px;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+<canvas id="game" width="900" height="700" tabindex="0" aria-label="Vector asteroid arcade game"></canvas>
+<div class="controls">
+Rotate: ← → / A D &nbsp; Thrust: ↑ / W &nbsp; Fire: SPACE &nbsp; Hyperspace: H / ↓ &nbsp; Pause: P
+<button id="start" type="button">START / RESTART</button>
+</div>
+</div>
+<script>
+"use strict";
+
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d"),startBtn=document.getElementById("start");
+const W=canvas.width,H=canvas.height,TAU=Math.PI*2;
+const keys=Object.create(null);
+let state="title",score=0,lives=3,wave=1,high=Number(localStorage.getItem("vectorRocksHigh")||0);
+let ship=null,rocks=[],bullets=[],particles=[],ufos=[],ufoBullets=[];
+let fireCooldown=0,ufoTimer=0,last=performance.now(),audioCtx=null;
+
+function rnd(a,b){return a+Math.random()*(b-a)}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function wrap(o,pad=0){
+ if(o.x<-pad)o.x=W+pad;if(o.x>W+pad)o.x=-pad;
+ if(o.y<-pad)o.y=H+pad;if(o.y>H+pad)o.y=-pad;
+}
+function distWrap(a,b){
+ let dx=Math.abs(a.x-b.x),dy=Math.abs(a.y-b.y);
+ dx=Math.min(dx,W-dx);dy=Math.min(dy,H-dy);
+ return Math.hypot(dx,dy);
+}
+function beep(freq=220,dur=.05,type="square",vol=.025){
+ try{
+  if(!audioCtx)audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type=type;o.frequency.value=freq;g.gain.value=vol;o.connect(g);g.connect(audioCtx.destination);
+  o.start();g.gain.exponentialRampToValueAtTime(.0001,audioCtx.currentTime+dur);o.stop(audioCtx.currentTime+dur);
+ }catch(e){}
+}
+function makeShip(){
+ return {x:W/2,y:H/2,vx:0,vy:0,a:-Math.PI/2,r:12,inv:120,alive:true};
+}
+function rockShape(r){
+ const pts=[];for(let i=0;i<10;i++){const a=i/10*TAU;pts.push({a,k:rnd(.72,1.2)})}return pts;
+}
+function addRock(x,y,size=3,vx=null,vy=null){
+ const radius=size===3?42:size===2?25:14,ang=rnd(0,TAU),speed=rnd(.55,1.25)+(wave*.035);
+ rocks.push({x,y,size,r:radius,vx:vx??Math.cos(ang)*speed,vy:vy??Math.sin(ang)*speed,rot:rnd(0,TAU),vr:rnd(-.018,.018),shape:rockShape(radius)});
+}
+function safeWave(){
+ rocks=[];
+ const count=Math.min(11,3+wave);
+ for(let i=0;i<count;i++){
+  let x,y;
+  do{x=rnd(30,W-30);y=rnd(30,H-30)}while(Math.hypot(x-W/2,y-H/2)<180);
+  addRock(x,y,3);
+ }
+}
+function resetGame(){
+ score=0;lives=3;wave=1;bullets=[];particles=[];ufos=[];ufoBullets=[];fireCooldown=0;ufoTimer=500;
+ ship=makeShip();safeWave();state="play";canvas.focus();beep(440,.05,"square",.02);
+}
+function burst(x,y,n=16,speed=3){
+ for(let i=0;i<n;i++){const a=rnd(0,TAU),s=rnd(.4,speed);particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rnd(18,45)})}
+}
+function splitRock(index){
+ const r=rocks[index];if(!r)return;
+ rocks.splice(index,1);burst(r.x,r.y,r.size*7,3.4);score+=r.size===3?20:r.size===2?50:100;beep(90+r.size*35,.08,"sawtooth",.025);
+ if(r.size>1){
+  for(let k=0;k<2;k++){const a=Math.atan2(r.vy,r.vx)+rnd(-1.5,1.5),s=Math.hypot(r.vx,r.vy)*1.45+rnd(.2,.7);addRock(r.x,r.y,r.size-1,Math.cos(a)*s,Math.sin(a)*s)}
+ }
+}
+function destroyShip(){
+ if(!ship||ship.inv>0||state!=="play")return false;
+ burst(ship.x,ship.y,30,5);beep(55,.35,"sawtooth",.045);lives--;
+ if(lives<=0){
+  state="gameover";ship.alive=false;
+  if(score>high){high=score;localStorage.setItem("vectorRocksHigh",String(high))}
+ }else{
+  ship=makeShip();bullets=[];ufoBullets=[];
+ }
+ return true;
+}
+function fire(){
+ if(state!=="play"||!ship||!ship.alive||fireCooldown>0)return;
+ const c=Math.cos(ship.a),s=Math.sin(ship.a);
+ bullets.push({x:ship.x+c*17,y:ship.y+s*17,vx:ship.vx+c*8.5,vy:ship.vy+s*8.5,life:70,r:2});
+ fireCooldown=8;beep(520,.035,"square",.018);
+}
+function hyperspace(){
+ if(state!=="play"||!ship||!ship.alive)return;
+ ship.x=rnd(60,W-60);ship.y=rnd(60,H-60);ship.vx*=.3;ship.vy*=.3;ship.inv=70;beep(900,.08,"sine",.02);
+}
+function spawnUfo(){
+ const left=Math.random()<.5;
+ ufos.push({x:left?-25:W+25,y:rnd(90,H-90),vx:left?rnd(1.3,2.1):-rnd(1.3,2.1),vy:rnd(-.45,.45),r:17,shot:rnd(50,100)});
+}
+function update(dt){
+ if(state!=="play"||!ship)return;
+ fireCooldown-=dt;ufoTimer-=dt;if(ship.inv>0)ship.inv-=dt;
+
+ if(keys.ArrowLeft||keys.KeyA)ship.a-=.075*dt;
+ if(keys.ArrowRight||keys.KeyD)ship.a+=.075*dt;
+ if(keys.ArrowUp||keys.KeyW){
+  ship.vx+=Math.cos(ship.a)*.13*dt;ship.vy+=Math.sin(ship.a)*.13*dt;
+  if(Math.random()<.5*dt)particles.push({x:ship.x-Math.cos(ship.a)*13,y:ship.y-Math.sin(ship.a)*13,vx:-Math.cos(ship.a)*rnd(1,2)+ship.vx,vy:-Math.sin(ship.a)*rnd(1,2)+ship.vy,life:rnd(5,12)});
+ }
+ if(keys.Space)fire();
+ const sp=Math.hypot(ship.vx,ship.vy);if(sp>7){ship.vx*=7/sp;ship.vy*=7/sp}
+ ship.x+=ship.vx*dt;ship.y+=ship.vy*dt;ship.vx*=Math.pow(.997,dt);ship.vy*=Math.pow(.997,dt);wrap(ship,18);
+
+ for(const r of rocks){r.x+=r.vx*dt;r.y+=r.vy*dt;r.rot+=r.vr*dt;wrap(r,r.r)}
+
+ for(let i=bullets.length-1;i>=0;i--){
+  const b=bullets[i];if(!b)continue;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;wrap(b,2);
+  if(b.life<=0){bullets.splice(i,1);continue}
+  let hit=false;
+  for(let j=rocks.length-1;j>=0;j--){
+   const r=rocks[j];if(r&&distWrap(b,r)<r.r){bullets.splice(i,1);splitRock(j);hit=true;break}
+  }
+  if(hit)continue;
+  for(let j=ufos.length-1;j>=0;j--){
+   const u=ufos[j];if(u&&distWrap(b,u)<u.r+3){bullets.splice(i,1);ufos.splice(j,1);score+=200;burst(u.x,u.y,18,4);beep(180,.12,"square",.03);break}
+  }
+ }
+
+ if(ufoTimer<=0){spawnUfo();ufoTimer=rnd(450,750)}
+ for(let i=ufos.length-1;i>=0;i--){
+  const u=ufos[i];if(!u)continue;u.x+=u.vx*dt;u.y+=u.vy*dt;u.shot-=dt;
+  if(u.y<60||u.y>H-60)u.vy*=-1;
+  if(u.x<-60||u.x>W+60){ufos.splice(i,1);continue}
+  if(u.shot<=0&&ship.alive){
+   const a=Math.atan2(ship.y-u.y,ship.x-u.x)+rnd(-.16,.16);
+   ufoBullets.push({x:u.x,y:u.y,vx:Math.cos(a)*4.5,vy:Math.sin(a)*4.5,life:130,r:3});u.shot=rnd(65,120);beep(300,.04,"square",.015);
+  }
+  if(ship.inv<=0&&distWrap(ship,u)<ship.r+u.r){if(destroyShip())return}
+ }
+ for(let i=ufoBullets.length-1;i>=0;i--){
+  const b=ufoBullets[i];if(!b)continue;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;wrap(b,3);
+  if(b.life<=0){ufoBullets.splice(i,1);continue}
+  if(ship.inv<=0&&distWrap(ship,b)<ship.r+b.r){if(destroyShip())return}
+ }
+ if(ship.inv<=0){
+  for(const r of rocks){if(r&&distWrap(ship,r)<ship.r+r.r*.82){if(destroyShip())return}}
+ }
+
+ for(let i=particles.length-1;i>=0;i--){
+  const p=particles[i];if(!p)continue;p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;wrap(p,2);
+  if(p.life<=0)particles.splice(i,1);
+ }
+ if(rocks.length===0){
+  wave++;score+=250;ship=makeShip();bullets=[];ufoBullets=[];safeWave();beep(660,.12,"square",.025);
+ }
+}
+function line(points,color="#fff",width=2,close=true){
+ ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(points[0][0],points[0][1]);
+ for(let i=1;i<points.length;i++)ctx.lineTo(points[i][0],points[i][1]);if(close)ctx.closePath();ctx.stroke();
+}
+function text(t,x,y,size=18,color="#fff",align="left"){ctx.fillStyle=color;ctx.font=`bold ${size}px Consolas`;ctx.textAlign=align;ctx.fillText(t,x,y)}
+function drawShip(){
+ if(!ship||!ship.alive||(ship.inv>0&&Math.floor(ship.inv/5)%2))return;
+ const c=Math.cos(ship.a),s=Math.sin(ship.a);
+ const tr=(lx,ly)=>[ship.x+lx*c-ly*s,ship.y+lx*s+ly*c];
+ line([tr(16,0),tr(-11,-10),tr(-6,0),tr(-11,10)],"#f5f7ff",2,true);
+ if(keys.ArrowUp||keys.KeyW)line([tr(-8,-5),tr(-20,0),tr(-8,5)],"#ffb703",2,false);
+}
+function drawRock(r){
+ ctx.save();ctx.translate(r.x,r.y);ctx.rotate(r.rot);ctx.strokeStyle="#e8edf7";ctx.lineWidth=2;ctx.beginPath();
+ r.shape.forEach((p,i)=>{const x=Math.cos(p.a)*r.r*p.k,y=Math.sin(p.a)*r.r*p.k;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.closePath();ctx.stroke();ctx.restore();
+}
+function drawUfo(u){
+ ctx.strokeStyle="#7df9ff";ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(u.x,u.y,17,7,0,0,TAU);ctx.stroke();
+ line([[u.x-10,u.y-6],[u.x-5,u.y-13],[u.x+6,u.y-13],[u.x+11,u.y-6]],"#7df9ff",2,false);
+}
+function draw(){
+ ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+ text(`SCORE ${String(score).padStart(6,"0")}`,18,30,18);
+ text(`HIGH ${String(high).padStart(6,"0")}`,W/2,30,18,"#ffe66d","center");
+ text(`LIVES ${lives}  WAVE ${wave}`,W-18,30,18,"#fff","right");
+ rocks.forEach(drawRock);ufos.forEach(drawUfo);
+ ctx.fillStyle="#fff";for(const b of bullets){if(b)ctx.beginPath(),ctx.arc(b.x,b.y,2.2,0,TAU),ctx.fill()}
+ ctx.fillStyle="#ff5d8f";for(const b of ufoBullets){if(b)ctx.beginPath(),ctx.arc(b.x,b.y,3,0,TAU),ctx.fill()}
+ ctx.fillStyle="#fff";for(const p of particles){if(p){ctx.globalAlpha=clamp(p.life/25,0,1);ctx.fillRect(p.x,p.y,2,2)}}ctx.globalAlpha=1;
+ drawShip();
+ if(state==="title"){
+  ctx.fillStyle="rgba(0,0,0,.88)";ctx.fillRect(145,225,610,220);
+  text("VECTOR ROCKS",450,290,48,"#f5f7ff","center");
+  text("CLASSIC SPACE ARCADE",450,330,20,"#7df9ff","center");
+  text("Blast rocks • avoid collisions • survive each wave",450,375,17,"#fff","center");
+  text("PRESS ENTER OR START",450,418,21,"#ffe66d","center");
+ }
+ if(state==="gameover"){
+  ctx.fillStyle="rgba(0,0,0,.9)";ctx.fillRect(225,270,450,145);
+  text("GAME OVER",450,325,40,"#ff5d8f","center");
+  text(`FINAL SCORE ${score}`,450,365,18,"#fff","center");
+  text("PRESS ENTER TO RESTART",450,397,17,"#7df9ff","center");
+ }
+ if(state==="paused"){
+  ctx.fillStyle="rgba(0,0,0,.88)";ctx.fillRect(330,305,240,80);text("PAUSED",450,356,32,"#fff","center");
+ }
+}
+function loop(now){
+ const dt=Math.min(2.5,(now-last)/16.667||1);last=now;
+ if(state!=="paused")update(dt);draw();requestAnimationFrame(loop);
+}
+document.addEventListener("keydown",e=>{
+ if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space"].includes(e.code))e.preventDefault();
+ keys[e.code]=true;
+ if(e.code==="Enter"&&(state==="title"||state==="gameover"))resetGame();
+ if((e.code==="KeyH"||e.code==="ArrowDown")&&!e.repeat)hyperspace();
+ if(e.code==="KeyP"&&!e.repeat){if(state==="play")state="paused";else if(state==="paused")state="play"}
+});
+document.addEventListener("keyup",e=>{keys[e.code]=false});
+startBtn.addEventListener("click",resetGame);
+
+ship=makeShip();
+rocks=[];bullets=[];particles=[];ufos=[];ufoBullets=[];
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

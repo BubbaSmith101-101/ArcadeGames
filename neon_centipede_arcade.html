@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neon Centipede - Retro Browser Arcade</title>
+<style>
+html,body{margin:0;min-height:100%;background:#05060b;color:#fff;font-family:Consolas,monospace}
+body{display:flex;align-items:center;justify-content:center}
+.wrap{width:min(96vw,820px);padding:12px;box-sizing:border-box}
+canvas{display:block;width:100%;height:auto;background:#02030a;border:3px solid #69707f;box-sizing:border-box;image-rendering:pixelated;outline:none}
+.controls{text-align:center;margin-top:8px;color:#d9dbe3;font-size:14px;line-height:1.6}
+button{font:inherit;background:#171923;color:#fff;border:1px solid #a9afbd;padding:7px 14px;cursor:pointer;margin-left:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<canvas id="game" width="800" height="760" tabindex="0" aria-label="Retro centipede-style arcade game"></canvas>
+<div class="controls">
+Move: Arrow keys / WASD &nbsp; Fire: SPACE &nbsp; Pause: P
+<button id="start" type="button">START / RESTART</button>
+</div>
+</div>
+<script>
+"use strict";
+
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const startBtn=document.getElementById("start");
+const W=canvas.width,H=canvas.height;
+const CELL=25,COLS=32,TOP=55,ROWS=27,PLAYER_TOP=TOP+19*CELL;
+const keys=Object.create(null);
+
+let state="title",score=0,lives=3,wave=1;
+let high=Number(localStorage.getItem("neonCentipedeHigh")||0);
+let player=null,shots=[],mushrooms=[],segments=[],spiders=[],fleas=[],particles=[];
+let shotCooldown=0,spiderTimer=0,fleaTimer=0,last=performance.now();
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function rand(a,b){return a+Math.random()*(b-a)}
+function rectHit(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function circleHit(x1,y1,r1,x2,y2,r2){return Math.hypot(x1-x2,y1-y2)<r1+r2}
+function cellCenterX(c){return c*CELL+CELL/2}
+function cellCenterY(r){return TOP+r*CELL+CELL/2}
+
+function addMushroom(col,row,hp=4){
+ if(col<0||col>=COLS||row<1||row>=ROWS)return;
+ const existing=mushrooms.find(m=>m.col===col&&m.row===row);
+ if(existing){existing.hp=Math.max(existing.hp,hp);return}
+ mushrooms.push({col,row,hp});
+}
+function seedMushrooms(){
+ mushrooms=[];
+ const used=new Set();
+ for(let i=0;i<62;i++){
+   let c=Math.floor(rand(1,COLS-1)),r=Math.floor(rand(2,24));
+   const k=c+","+r;
+   if(used.has(k)){i--;continue}
+   used.add(k);addMushroom(c,r,4);
+ }
+}
+function makeCentipede(){
+ segments=[];
+ const count=Math.min(18,10+wave);
+ for(let i=0;i<count;i++){
+   segments.push({x:cellCenterX(COLS-1-i),y:cellCenterY(0),dir:-1,down:1,row:0,col:COLS-1-i,head:i===0});
+ }
+}
+function resetPlayer(){
+ player={x:W/2-11,y:H-48,w:22,h:22,inv:90};
+ shots=[];spiders=[];fleas=[];shotCooldown=0;spiderTimer=90;fleaTimer=220;
+}
+function resetGame(){
+ score=0;lives=3;wave=1;seedMushrooms();makeCentipede();resetPlayer();state="play";canvas.focus();
+}
+function newWave(){
+ wave++;score+=500;makeCentipede();resetPlayer();
+}
+function loseLife(){
+ if(!player||player.inv>0||state!=="play")return false;
+ lives--;
+ burst(player.x+11,player.y+11,28);
+ if(lives<=0){
+   state="gameover";
+   if(score>high){high=score;localStorage.setItem("neonCentipedeHigh",String(high))}
+ }else{
+   resetPlayer();
+ }
+ return true;
+}
+function burst(x,y,n=10){
+ for(let i=0;i<n;i++)particles.push({x,y,vx:rand(-3,3),vy:rand(-3,3),life:rand(15,35)});
+}
+function mushroomAt(col,row){return mushrooms.find(m=>m.col===col&&m.row===row)}
+function centipedeStep(){
+ for(const s of segments){
+   let nextCol=s.col+s.dir;
+   let turn=nextCol<0||nextCol>=COLS||mushroomAt(nextCol,s.row);
+   if(turn){
+     s.dir*=-1;
+     s.row+=s.down;
+     if(s.row>=ROWS){s.row=ROWS-1;s.down=-1}
+     if(s.row<19){s.down=1}
+     s.y=cellCenterY(s.row);
+   }else{
+     s.col=nextCol;
+     s.x=cellCenterX(s.col);
+   }
+ }
+}
+let centMove=0;
+function update(dt){
+ if(state!=="play")return;
+ if(player.inv>0)player.inv-=dt;
+ shotCooldown-=dt;spiderTimer-=dt;fleaTimer-=dt;
+
+ const speed=4.2;
+ let dx=((keys.ArrowRight||keys.KeyD)?1:0)-((keys.ArrowLeft||keys.KeyA)?1:0);
+ let dy=((keys.ArrowDown||keys.KeyS)?1:0)-((keys.ArrowUp||keys.KeyW)?1:0);
+ if(dx&&dy){dx*=.707;dy*=.707}
+ player.x=clamp(player.x+dx*speed*dt,3,W-player.w-3);
+ player.y=clamp(player.y+dy*speed*dt,PLAYER_TOP,H-player.h-5);
+
+ if((keys.Space)&&shotCooldown<=0){
+   shots.push({x:player.x+9,y:player.y-10,w:4,h:13});
+   shotCooldown=8;
+ }
+
+ centMove+=dt;
+ const stepEvery=Math.max(2.0,7.0-wave*.35);
+ while(centMove>=stepEvery){centMove-=stepEvery;centipedeStep()}
+
+ for(let i=shots.length-1;i>=0;i--){
+   const sh=shots[i];sh.y-=10*dt;
+   if(sh.y<-20){shots.splice(i,1);continue}
+   let used=false;
+   for(let j=mushrooms.length-1;j>=0&&!used;j--){
+     const m=mushrooms[j],mx=m.col*CELL+4,my=TOP+m.row*CELL+4;
+     if(rectHit(sh,{x:mx,y:my,w:17,h:17})){
+       m.hp--;shots.splice(i,1);used=true;score+=1;
+       if(m.hp<=0){mushrooms.splice(j,1);score+=4}
+     }
+   }
+   if(used)continue;
+   for(let j=segments.length-1;j>=0;j--){
+     const s=segments[j];
+     if(circleHit(sh.x+2,sh.y+5,5,s.x,s.y,10)){
+       addMushroom(s.col,s.row,4);burst(s.x,s.y,12);
+       score+=s.head?100:10;
+       segments.splice(j,1);shots.splice(i,1);used=true;
+       if(segments.length)segments[0].head=true;
+       break;
+     }
+   }
+   if(used)continue;
+   for(let j=spiders.length-1;j>=0;j--){
+     const sp=spiders[j];
+     if(!sp)continue;
+     if(rectHit(sh,sp)){score+=300;burst(sp.x+sp.w/2,sp.y+sp.h/2,18);spiders.splice(j,1);shots.splice(i,1);used=true;break}
+   }
+   if(used)continue;
+   for(let j=fleas.length-1;j>=0;j--){
+     const f=fleas[j];
+     if(!f)continue;
+     if(rectHit(sh,f)){score+=200;burst(f.x+8,f.y+8,12);fleas.splice(j,1);shots.splice(i,1);break}
+   }
+ }
+
+ if(spiderTimer<=0){
+   const fromLeft=Math.random()<.5;
+   spiders.push({x:fromLeft?-30:W+5,y:rand(PLAYER_TOP,H-40),w:28,h:20,vx:fromLeft?rand(2,3.5):-rand(2,3.5),vy:rand(-2.2,2.2)});
+   spiderTimer=rand(100,190);
+ }
+ for(let i=spiders.length-1;i>=0;i--){
+   const s=spiders[i];
+   if(!s)continue;
+   s.x+=s.vx*dt;s.y+=s.vy*dt;
+   if(s.y<PLAYER_TOP||s.y>H-30)s.vy*=-1;
+   if(s.x<-60||s.x>W+60){spiders.splice(i,1);continue}
+   if(rectHit(player,s)&&loseLife())return;
+ }
+
+ if(fleaTimer<=0){
+   fleas.push({x:cellCenterX(Math.floor(rand(1,COLS-1)))-7,y:TOP,w:14,h:18,vy:3.3});
+   fleaTimer=rand(230,400);
+ }
+ for(let i=fleas.length-1;i>=0;i--){
+   const f=fleas[i];
+   if(!f)continue;
+   f.y+=f.vy*dt;
+   if(Math.random()<.025*dt)addMushroom(Math.floor(f.x/CELL),Math.floor((f.y-TOP)/CELL),4);
+   if(f.y>H+20){fleas.splice(i,1);continue}
+   if(rectHit(player,f)&&loseLife())return;
+ }
+
+ for(const s of segments){
+   if(s&&circleHit(player.x+11,player.y+11,10,s.x,s.y,10)){
+     if(loseLife())return;
+   }
+ }
+
+ for(let i=particles.length-1;i>=0;i--){
+   const p=particles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;
+   if(p.life<=0)particles.splice(i,1);
+ }
+ if(segments.length===0)newWave();
+}
+
+function text(t,x,y,size=18,color="#fff",align="left"){
+ ctx.fillStyle=color;ctx.font=`bold ${size}px Consolas`;ctx.textAlign=align;ctx.fillText(t,x,y);
+}
+function drawMushroom(m){
+ const x=cellCenterX(m.col),y=cellCenterY(m.row);
+ const colors=["#4d194d","#8a1c7c","#d62f9d","#ff65d8"];
+ ctx.fillStyle=colors[clamp(m.hp-1,0,3)];
+ ctx.beginPath();ctx.arc(x,y-3,9,Math.PI,0);ctx.fill();
+ ctx.fillRect(x-3,y-3,6,10);
+ ctx.fillStyle="#fff";ctx.fillRect(x-5,y-6,2,2);ctx.fillRect(x+4,y-5,2,2);
+}
+function drawSegment(s){
+ ctx.fillStyle=s.head?"#ffd60a":"#70e000";
+ ctx.beginPath();ctx.arc(s.x,s.y,10,0,Math.PI*2);ctx.fill();
+ ctx.strokeStyle="#14213d";ctx.lineWidth=2;ctx.stroke();
+ if(s.head){
+   ctx.fillStyle="#111";ctx.fillRect(s.x-5,s.y-3,3,3);ctx.fillRect(s.x+3,s.y-3,3,3);
+ }
+}
+function drawSpider(s){
+ ctx.strokeStyle="#ff7b00";ctx.lineWidth=3;
+ for(let k=-1;k<=1;k+=2){
+   ctx.beginPath();ctx.moveTo(s.x+14,s.y+10);ctx.lineTo(s.x+(k<0?0:28),s.y);ctx.stroke();
+   ctx.beginPath();ctx.moveTo(s.x+14,s.y+10);ctx.lineTo(s.x+(k<0?0:28),s.y+20);ctx.stroke();
+ }
+ ctx.fillStyle="#f72585";ctx.beginPath();ctx.arc(s.x+14,s.y+10,8,0,Math.PI*2);ctx.fill();
+}
+function drawFlea(f){
+ ctx.fillStyle="#00e5ff";ctx.beginPath();ctx.ellipse(f.x+7,f.y+9,6,9,0,0,Math.PI*2);ctx.fill();
+}
+function drawPlayer(){
+ if(player.inv>0&&Math.floor(player.inv/5)%2)return;
+ const x=player.x,y=player.y;
+ ctx.fillStyle="#00f5d4";
+ ctx.beginPath();ctx.moveTo(x+11,y);ctx.lineTo(x+22,y+20);ctx.lineTo(x+15,y+17);ctx.lineTo(x+11,y+22);ctx.lineTo(x+7,y+17);ctx.lineTo(x,y+20);ctx.closePath();ctx.fill();
+ ctx.fillStyle="#fff";ctx.fillRect(x+9,y+5,4,7);
+}
+function draw(){
+ ctx.fillStyle="#02030a";ctx.fillRect(0,0,W,H);
+ ctx.strokeStyle="#25283a";ctx.lineWidth=1;
+ for(let y=TOP;y<H;y+=CELL){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+ text(`SCORE ${String(score).padStart(6,"0")}`,16,30,18);
+ text(`HIGH ${String(high).padStart(6,"0")}`,W/2,30,18,"#ffd60a","center");
+ text(`LIVES ${lives}  WAVE ${wave}`,W-16,30,18,"#fff","right");
+ ctx.strokeStyle="#304ffe";ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,PLAYER_TOP);ctx.lineTo(W,PLAYER_TOP);ctx.stroke();
+
+ mushrooms.forEach(drawMushroom);
+ segments.forEach(drawSegment);
+ spiders.forEach(drawSpider);
+ fleas.forEach(drawFlea);
+ ctx.fillStyle="#f8f9fa";for(const s of shots)ctx.fillRect(s.x,s.y,s.w,s.h);
+ ctx.fillStyle="#fff";for(const p of particles){ctx.globalAlpha=clamp(p.life/25,0,1);ctx.fillRect(p.x,p.y,3,3)}ctx.globalAlpha=1;
+ if(player)drawPlayer();
+
+ if(state==="title"){
+   ctx.fillStyle="rgba(0,0,0,.86)";ctx.fillRect(120,235,560,210);
+   text("NEON CENTIPEDE",400,295,42,"#70e000","center");
+   text("RETRO ARCADE",400,335,21,"#00e5ff","center");
+   text("Destroy the swarm. Survive the garden.",400,380,17,"#fff","center");
+   text("PRESS ENTER OR START",400,420,20,"#ffd60a","center");
+ }
+ if(state==="gameover"){
+   ctx.fillStyle="rgba(0,0,0,.88)";ctx.fillRect(180,280,440,135);
+   text("GAME OVER",400,335,38,"#f72585","center");
+   text(`FINAL SCORE ${score}`,400,370,18,"#fff","center");
+   text("PRESS ENTER TO RESTART",400,400,17,"#00e5ff","center");
+ }
+ if(state==="paused"){
+   ctx.fillStyle="rgba(0,0,0,.85)";ctx.fillRect(290,315,220,80);
+   text("PAUSED",400,365,32,"#fff","center");
+ }
+}
+function loop(now){
+ const dt=Math.min(2.5,(now-last)/16.667||1);last=now;
+ if(state!=="paused")update(dt);
+ draw();requestAnimationFrame(loop);
+}
+document.addEventListener("keydown",e=>{
+ if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space"].includes(e.code))e.preventDefault();
+ keys[e.code]=true;
+ if(e.code==="Enter"&&(state==="title"||state==="gameover"))resetGame();
+ if(e.code==="KeyP"){
+   if(state==="play")state="paused";
+   else if(state==="paused")state="play";
+ }
+});
+document.addEventListener("keyup",e=>{keys[e.code]=false});
+startBtn.addEventListener("click",resetGame);
+
+resetPlayer();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

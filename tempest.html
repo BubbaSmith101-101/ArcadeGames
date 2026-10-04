@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Vector Tempest - HTML Arcade Game</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#02030a;color:#fff;font-family:Consolas,monospace}
+  canvas{display:block;width:100vw;height:100vh;background:radial-gradient(circle at center,#081124 0,#02030a 55%,#000 100%)}
+  #help{position:fixed;left:18px;bottom:14px;color:#79ffff;font-size:13px;text-shadow:0 0 7px #00ffff;opacity:.8;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="help">← → / A D: move &nbsp; SPACE: fire &nbsp; P: pause &nbsp; ENTER: start/restart</div>
+<script>
+'use strict';
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+let W=0,H=0,DPR=1;
+function resize(){DPR=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0)}
+addEventListener('resize',resize);resize();
+
+const TAU=Math.PI*2, LANES=16;
+const keys={};
+addEventListener('keydown',e=>{keys[e.code]=true;if(['ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();if(e.code==='KeyP'&&game.started)game.paused=!game.paused;if(e.code==='Enter'&&(!game.started||game.over))resetGame();});
+addEventListener('keyup',e=>keys[e.code]=false);
+
+const game={started:false,paused:false,over:false,score:0,lives:3,level:1,high:+localStorage.vectorTempestHigh||0,time:0,spawn:0,flash:0};
+let player={lane:0,cool:0,inv:0};
+let shots=[];
+let enemies=[];
+let particles=[];
+function resetGame(){game.started=true;game.paused=false;game.over=false;game.score=0;game.lives=3;game.level=1;game.spawn=.8;player={lane:0,cool:0,inv:0};shots=[];enemies=[];particles=[];}
+
+function tubeGeom(){const cx=W/2,cy=H/2+18;const outer=Math.min(W,H)*.43;const inner=outer*.12;return {cx,cy,outer,inner};}
+function point(lane,t){const g=tubeGeom();const a=-Math.PI/2+lane/LANES*TAU;const r=g.inner+(g.outer-g.inner)*t;const squash=.72;return{x:g.cx+Math.cos(a)*r,y:g.cy+Math.sin(a)*r*squash};}
+function lanePointFloat(lane,t){const l=((lane%LANES)+LANES)%LANES;const a=-Math.PI/2+l/LANES*TAU;const g=tubeGeom(),r=g.inner+(g.outer-g.inner)*t;return{x:g.cx+Math.cos(a)*r,y:g.cy+Math.sin(a)*r*.72,a};}
+
+function neonLine(x1,y1,x2,y2,color,w=1){ctx.save();ctx.strokeStyle=color;ctx.lineWidth=w;ctx.shadowBlur=9;ctx.shadowColor=color;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.restore();}
+function drawTube(){
+  const colors=['#ff36ff','#00f6ff','#ffe54a','#ff3c6f'];
+  for(let i=0;i<LANES;i++){let o=point(i,1),inn=point(i,0);neonLine(o.x,o.y,inn.x,inn.y,colors[i%colors.length],1.25)}
+  for(const t of [0,.18,.38,.62,.82,1]){ctx.save();ctx.lineWidth=t===1?2:1;ctx.shadowBlur=8;for(let i=0;i<LANES;i++){let a=point(i,t),b=point((i+1)%LANES,t);ctx.strokeStyle=colors[i%colors.length];ctx.shadowColor=ctx.strokeStyle;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}ctx.restore()}
+}
+function drawPlayer(){let p=lanePointFloat(player.lane,1.025),g=tubeGeom();let a=p.a;ctx.save();ctx.translate(p.x,p.y);ctx.rotate(a+Math.PI/2);ctx.strokeStyle=player.inv>0&&Math.floor(game.time*12)%2?'#fff':'#00ffff';ctx.fillStyle='#06101a';ctx.lineWidth=3;ctx.shadowBlur=14;ctx.shadowColor='#00ffff';ctx.beginPath();ctx.moveTo(0,-15);ctx.lineTo(-12,11);ctx.lineTo(0,6);ctx.lineTo(12,11);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();}
+function fire(){if(player.cool>0)return;shots.push({lane:Math.round(player.lane)%LANES,t:.96,speed:1.35});player.cool=.13;}
+function spawnEnemy(){let type=Math.random()<.22?'spiker':'flipper';enemies.push({lane:Math.floor(Math.random()*LANES),t:.03,speed:(.075+game.level*.008)*(type==='spiker'?.8:1),type,hp:type==='spiker'?2:1,wob:Math.random()*TAU});}
+function explode(lane,t,color,count=12){let p=lanePointFloat(lane,t);for(let i=0;i<count;i++){let a=Math.random()*TAU,s=30+Math.random()*110;particles.push({x:p.x,y:p.y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.3+Math.random()*.45,color});}}
+function loseLife(lane){if(player.inv>0)return;explode(lane,1,'#ff3864',28);game.lives--;player.inv=2;enemies=enemies.filter(e=>e.t<.82);if(game.lives<=0){game.over=true;game.high=Math.max(game.high,game.score);localStorage.vectorTempestHigh=game.high;}}
+function update(dt){
+  if(!game.started||game.paused||game.over)return;game.time+=dt;player.cool=Math.max(0,player.cool-dt);player.inv=Math.max(0,player.inv-dt);
+  let move=0;if(keys.ArrowLeft||keys.KeyA)move-=1;if(keys.ArrowRight||keys.KeyD)move+=1;player.lane=(player.lane+move*7.5*dt+LANES)%LANES;if(keys.Space)fire();
+  game.spawn-=dt;if(game.spawn<=0){spawnEnemy();game.spawn=Math.max(.18,.92-game.level*.045)*(0.7+Math.random()*.6)}
+  for(let s of shots)s.t-=s.speed*dt;shots=shots.filter(s=>s.t>-.02);
+  for(let e of enemies){e.wob+=dt*5;e.t+=e.speed*dt;if(e.type==='flipper'&&Math.random()<dt*.32)e.lane=(e.lane+(Math.random()<.5?-1:1)+LANES)%LANES;}
+  for(let si=shots.length-1;si>=0;si--){let s=shots[si];for(let ei=enemies.length-1;ei>=0;ei--){let e=enemies[ei],dLane=Math.min(Math.abs(s.lane-e.lane),LANES-Math.abs(s.lane-e.lane));if(dLane<.55&&Math.abs(s.t-e.t)<.07){shots.splice(si,1);e.hp--;explode(e.lane,e.t,e.type==='spiker'?'#ffe54a':'#ff39ff',7);if(e.hp<=0){game.score+=e.type==='spiker'?250:100;enemies.splice(ei,1);if(game.score>0&&game.score%(3500+game.level*500)<250){game.level++;game.flash=.35;}}break;}}
+  }
+  for(let i=enemies.length-1;i>=0;i--){let e=enemies[i];if(e.t>=.98){let d=Math.min(Math.abs(e.lane-player.lane),LANES-Math.abs(e.lane-player.lane));if(d<1.0)loseLife(e.lane);enemies.splice(i,1);}}
+  for(let p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.98;p.vy*=.98;p.life-=dt}particles=particles.filter(p=>p.life>0);game.flash=Math.max(0,game.flash-dt);
+}
+function drawShot(s){let p=lanePointFloat(s.lane,s.t);ctx.save();ctx.fillStyle='#fff';ctx.shadowBlur=16;ctx.shadowColor='#00ffff';ctx.beginPath();ctx.arc(p.x,p.y,3.2,0,TAU);ctx.fill();ctx.restore();}
+function drawEnemy(e){let p=lanePointFloat(e.lane,e.t),scale=.35+e.t*.9;ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.a+Math.PI/2+(e.type==='flipper'?Math.sin(e.wob)*.45:0));ctx.scale(scale,scale);let c=e.type==='spiker'?'#ffe54a':'#ff38ff';ctx.strokeStyle=c;ctx.lineWidth=2.2;ctx.shadowBlur=12;ctx.shadowColor=c;ctx.beginPath();if(e.type==='spiker'){ctx.moveTo(0,-10);ctx.lineTo(9,9);ctx.lineTo(0,4);ctx.lineTo(-9,9);ctx.closePath()}else{ctx.moveTo(-11,-7);ctx.lineTo(0,0);ctx.lineTo(11,-7);ctx.lineTo(6,9);ctx.lineTo(0,4);ctx.lineTo(-6,9);ctx.closePath()}ctx.stroke();ctx.restore();}
+function text(str,x,y,size=20,align='left',color='#00ffff'){ctx.save();ctx.font=`bold ${size}px Consolas,monospace`;ctx.textAlign=align;ctx.fillStyle=color;ctx.shadowBlur=9;ctx.shadowColor=color;ctx.fillText(str,x,y);ctx.restore();}
+function draw(){ctx.clearRect(0,0,W,H);ctx.fillStyle='rgba(0,4,14,.28)';ctx.fillRect(0,0,W,H);drawTube();for(let s of shots)drawShot(s);for(let e of enemies)drawEnemy(e);if(game.started&&!game.over)drawPlayer();for(let p of particles){ctx.save();ctx.globalAlpha=Math.max(0,p.life*2);ctx.fillStyle=p.color;ctx.shadowBlur=8;ctx.shadowColor=p.color;ctx.fillRect(p.x,p.y,2.5,2.5);ctx.restore()}
+  text(`SCORE ${String(game.score).padStart(6,'0')}`,22,34,20);text(`HIGH ${String(game.high).padStart(6,'0')}`,W/2,34,18,'center','#ffe54a');text(`LIVES ${game.lives}`,W-22,34,20,'right','#ff4b75');text(`LEVEL ${game.level}`,W/2,H-24,17,'center','#b780ff');
+  if(!game.started){text('VECTOR TEMPEST',W/2,H*.38,44,'center','#ff39ff');text('AN HTML VECTOR ARCADE HOMAGE',W/2,H*.45,17,'center','#00ffff');text('PRESS ENTER TO START',W/2,H*.58,23,'center','#ffe54a');}
+  if(game.paused){ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(0,0,W,H);text('PAUSED',W/2,H/2,38,'center','#fff')}
+  if(game.over){ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,0,W,H);text('GAME OVER',W/2,H*.43,46,'center','#ff3864');text(`FINAL SCORE ${game.score}`,W/2,H*.51,22,'center','#00ffff');text('PRESS ENTER TO RESTART',W/2,H*.59,20,'center','#ffe54a')}
+  if(game.flash>0){ctx.fillStyle=`rgba(255,255,255,${game.flash*.28})`;ctx.fillRect(0,0,W,H)}
+}
+let last=performance.now();function loop(now){let dt=Math.min(.033,(now-last)/1000);last=now;update(dt);draw();requestAnimationFrame(loop)}requestAnimationFrame(loop);
+</script>
+</body>
+</html>
